@@ -265,7 +265,17 @@ extern const char* WTXIDRELAY;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */
-const std::vector<std::string>& getAllNetMessageTypes();
+const std::map<uint8_t, std::string>& getAllNetMessageTypes();
+
+/** Short message type IDs are a low bandwidth representations of a message type
+ *   The mapping is a peer to peer agreement
+ *
+ *   returns the short ID for a message type (if known) */
+std::optional<uint8_t> GetShortIDFromMessageType(const std::string& message_type);
+
+/** returns the message type (string) from a short ID
+ * returns an empty string if short ID has not been found */
+bool GetMessageTypeFromShortID(const uint8_t shortID, std::string& message_type);
 
 /** nServices flags */
 enum ServiceFlags : uint64_t {
