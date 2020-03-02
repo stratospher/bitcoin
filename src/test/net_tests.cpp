@@ -909,4 +909,85 @@ BOOST_AUTO_TEST_CASE(initial_advertise_from_version_message)
     TestOnlyResetTimeData();
 }
 
+void message_serialize_deserialize_test(bool v2, const std::vector<CSerializedNetMsg>& test_msgs)
+{
+    // use 32 byte keys with all zeros
+    CPrivKey k1(32, 0);
+    CPrivKey k2(32, 0);
+
+    // construct the serializers
+    std::unique_ptr<TransportSerializer> serializer;
+    std::unique_ptr<TransportDeserializer> deserializer;
+
+    if (v2) {
+        serializer = std::make_unique<V2TransportSerializer>(V2TransportSerializer(k1, k2));
+        deserializer = std::make_unique<V2TransportDeserializer>(V2TransportDeserializer((NodeId)0, k1, k2));
+    } else {
+        serializer = std::make_unique<V1TransportSerializer>(V1TransportSerializer());
+        deserializer = std::make_unique<V1TransportDeserializer>(V1TransportDeserializer(Params(), (NodeId)0, SER_NETWORK, INIT_PROTO_VERSION));
+    }
+    // run a couple of times through all messages with the same AEAD instance
+    for (unsigned int i = 0; i < 100; i++) {
+        for (const CSerializedNetMsg& msg_orig : test_msgs) {
+            // bypass the copy protection
+            CSerializedNetMsg msg;
+            msg.data = msg_orig.data;
+            msg.m_type = msg_orig.m_type;
+            size_t raw_msg_size{msg.data.size()};
+
+            std::vector<unsigned char> serialized_header;
+            serializer->prepareForTransport(msg, serialized_header);
+
+            // read two times
+            //  first: read header
+            size_t read_bytes{0};
+            Span<const uint8_t> span_header(serialized_header.data(), serialized_header.size());
+            if (serialized_header.size() > 0) read_bytes += deserializer->Read(span_header);
+            //  second: read the encrypted payload (if required)
+            Span<const uint8_t> span_msg(msg.data.data(), msg.data.size());
+            if (msg.data.size() > 0) read_bytes += deserializer->Read(span_msg);
+            if (msg.data.size() > read_bytes) {
+                Span<const uint8_t> span_msg(msg.data.data() + read_bytes, msg.data.size() - read_bytes);
+                read_bytes += deserializer->Read(span_msg);
+            }
+            BOOST_CHECK(deserializer->Complete());
+            BOOST_CHECK_EQUAL(read_bytes, msg.data.size() + serialized_header.size());
+            // message must be complete
+            bool reject_message{true};
+            bool disconnect{true};
+            CNetMessage result{deserializer->GetMessage(GetTime<std::chrono::microseconds>(), reject_message, disconnect)};
+            BOOST_CHECK(!reject_message);
+            BOOST_CHECK(!disconnect);
+            BOOST_CHECK(reject_message || result.m_type == msg.m_type);
+            BOOST_CHECK(reject_message || raw_msg_size == result.m_message_size);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(net_v2)
+{
+    // create some messages where we perform serialization and deserialization
+    std::vector<CSerializedNetMsg> test_msgs;
+    test_msgs.push_back(CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERACK));
+    test_msgs.push_back(CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERSION, PROTOCOL_VERSION, (int)NODE_NETWORK, 123, CAddress(CService(), NODE_NONE), CAddress(CService(), NODE_NONE), 123, "foobar", 500000, true));
+    test_msgs.push_back(CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::PING, 123456));
+    CDataStream stream(ParseHex("020000000001013107ca31e1950a9b44b75ce3e8f30127e4d823ed8add1263a1cc8adcc8e49164000000001716001487835ecf51ea0351ef266d216a7e7a3e74b84b4efeffffff02082268590000000017a9144a94391b99e672b03f56d3f60800ef28bc304c4f8700ca9a3b0000000017a9146d5df9e79f752e3c53fc468db89cafda4f7d00cb87024730440220677de5b11a5617d541ba06a1fa5921ab6b4509f8028b23f18ab8c01c5eb1fcfb02202fe382e6e87653f60ff157aeb3a18fc888736720f27ced546b0b77431edabdb0012102608c772598e9645933a86bcd662a3b939e02fb3e77966c9713db5648d5ba8a0006010000"), SER_NETWORK, PROTOCOL_VERSION);
+    test_msgs.push_back(CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::TX, CTransaction(deserialize, stream)));
+    std::vector<CInv> vInv;
+    for (unsigned int i = 0; i < 1000; i++) {
+        vInv.push_back(CInv(MSG_BLOCK, Params().GenesisBlock().GetHash()));
+    }
+    test_msgs.push_back(CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::INV, vInv));
+
+    // add a dummy message
+    std::string dummy;
+    for (unsigned int i = 0; i < 100; i++) {
+        dummy += "020000000001013107ca31e1950a9b44b75ce3e8f30127e4d823ed8add1263a1cc8adcc8e49164000000001716001487835ecf51ea0351ef266d216a7e7a3e74b84b4efeffffff02082268590000000017a9144a94391b99e672b03f56d3f60800ef28bc304c4f8700ca9a3b0000000017a9146d5df9e79f752e3c53fc468db89cafda4f7d00cb87024730440220677de5b11a5617d541ba06a1fa5921ab6b4509f8028b23f18ab8c01c5eb1fcfb02202fe382e6e87653f60ff157aeb3a18fc888736720f27ced546b0b77431edabdb0012102608c772598e9645933a86bcd662a3b939e02fb3e77966c9713db5648d5ba8a0006010000";
+    }
+    test_msgs.push_back(CNetMsgMaker(INIT_PROTO_VERSION).Make("foobar", dummy));
+
+    message_serialize_deserialize_test(true, test_msgs);
+    message_serialize_deserialize_test(false, test_msgs);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
