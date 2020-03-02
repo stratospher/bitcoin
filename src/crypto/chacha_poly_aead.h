@@ -11,6 +11,7 @@
 
 static constexpr int CHACHA20_POLY1305_AEAD_KEY_LEN = 32;
 static constexpr int CHACHA20_POLY1305_AEAD_AAD_LEN = 3; /* 3 bytes length */
+static constexpr int CHACHA20_POLY1305_AEAD_TAG_LEN = POLY1305_TAGLEN;
 static constexpr int CHACHA20_ROUND_OUTPUT = 64;         /* 64 bytes per round */
 
 /* A AEAD class for ChaCha20-Poly1305@bitcoin.
