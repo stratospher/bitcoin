@@ -7,6 +7,7 @@
 
 #include <crypto/common.h>
 #include <crypto/chacha20.h>
+#include<stdio.h> 
 
 #include <string.h>
 
@@ -57,6 +58,13 @@ ChaCha20::ChaCha20()
 ChaCha20::ChaCha20(const unsigned char* k, size_t keylen)
 {
     SetKey(k, keylen);
+}
+
+void ChaCha20::PrintInput()
+{
+    for(int i=0;i<16;i++){
+      fprintf(stderr, "input[%d]: %d\n",i,input[i]); //4 byte
+    }
 }
 
 void ChaCha20::SetIV(uint64_t iv)

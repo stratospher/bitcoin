@@ -141,6 +141,13 @@ void ECRYPT_ivsetup(ECRYPT_ctx *x,const u8 *iv)
   x->input[14] = U8TO32_LITTLE(iv + 0);
   x->input[15] = U8TO32_LITTLE(iv + 4);
 }
+void ECRYPT_print(ECRYPT_ctx *x)
+{
+  for(int i=0;i<16;i++){
+      fprintf(stderr, "input[%d]: %d\n",i, x->input[i]); //4 byte
+  }
+}
+
 
 void ECRYPT_encrypt_bytes(ECRYPT_ctx *x,const u8 *m,u8 *c,u32 bytes)
 {
@@ -294,8 +301,10 @@ FUZZ_TARGET(crypto_compare_chacha20)
 	      const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32));
         chacha20 = ChaCha20{key.data(), key.size()};
         ECRYPT_keysetup(&ctx,key.data(),key.size()*8);
-        uint64_t iv=0;
-        ECRYPT_ivsetup(&ctx, (u8 *)&iv);
+        // uint64_t iv=0;
+        // ECRYPT_ivsetup(&ctx, (u8 *)&iv);
+        u8 iv[8] = {0,0,0,0,0,0,0,0};
+        ECRYPT_ivsetup(&ctx, iv);
     }
     while (fuzzed_data_provider.ConsumeBool()) {
         CallOneOf(
@@ -304,12 +313,12 @@ FUZZ_TARGET(crypto_compare_chacha20)
 	    	      size_t cir=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32);
               const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, cir);
               chacha20.SetKey(key.data(), key.size());
-		//ECRYPT_keysetup(&ctx,key.data(),key.size()*8);//Wouldn't *8 cause a problem? unsigned char is ideally uint8_t and u32is the type of that argument.
+		// ECRYPT_keysetup(&ctx,key.data(),key.size()*8);//Wouldn't *8 cause a problem? unsigned char is ideally uint8_t and u32is the type of that argument.
             },
             [&] {
 	    	      uint64_t iv=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
               chacha20.SetIV(iv);
-		//ECRYPT_ivsetup(&ctx,(u8 *)&iv); //actual type is const u8 *, wouldn't passing uint64_t cause problems? of course it would, let's change DJB's function? -- critical!!!
+		// ECRYPT_ivsetup(&ctx,(u8 *)&iv); //actual type is const u8 *, wouldn't passing uint64_t cause problems? of course it would, let's change DJB's function? -- critical!!!
             },
             [&] {
               uint64_t counter=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
@@ -324,17 +333,17 @@ FUZZ_TARGET(crypto_compare_chacha20)
               if(output.data()!=NULL && output2.data()!=NULL){
                 if(memcmp(output.data(),output2.data(),integralInRange)==0){
                     fprintf(stderr, "--------bytes match---------\n");
-                    std::string str(output.begin(), output.end());
-                    fprintf(stderr, "str: %s\n",str.c_str());
-                    std::string str2(output2.begin(), output2.end());
-                    fprintf(stderr, "str2: %s\n",str2.c_str());
+                    // std::string str(output.begin(), output.end());
+                    // fprintf(stderr, "str: %s\n",str.c_str());
+                    // std::string str2(output2.begin(), output2.end());
+                    // fprintf(stderr, "str2: %s\n",str2.c_str());
                     fprintf(stderr, "-----------------------------\n");
                 }else{
                     fprintf(stderr, "--!--!-!---bytes don't match-!--!--!-\n");
-                    std::string str(output.begin(), output.end());
-                    fprintf(stderr, "str: %s\n",str.c_str());
-                    std::string str2(output2.begin(), output2.end());
-                    fprintf(stderr, "str2: %s\n",str2.c_str());
+                    fprintf(stderr, "This is Daniel's\n");
+                    ECRYPT_print(&ctx);
+                    fprintf(stderr, "This is Bitcoin's\n");
+                    chacha20.PrintInput();
                     fprintf(stderr, "--!---!---!---!----!--!--!--\n");
                 }
               } 
