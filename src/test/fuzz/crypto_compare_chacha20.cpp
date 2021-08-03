@@ -138,9 +138,18 @@ void ECRYPT_ivsetup(ECRYPT_ctx *x,const u8 *iv)
 {
   x->input[12] = 0;
   x->input[13] = 0;
-  x->input[14] = U8TO32_LITTLE(iv + 0);
+  x->input[14] = U8TO32_LITTLE(iv + 0); //pass same type of inputs - try both ways!!!--critical
   x->input[15] = U8TO32_LITTLE(iv + 4);
 }
+
+void ECRYPT_countersetup(ECRYPT_ctx *x,const u8 *counter)
+{
+  x->input[12] = U8TO32_LITTLE(counter + 0);
+  x->input[13] = U8TO32_LITTLE(counter + 4);
+  // x->input[14] = U8TO32_LITTLE(iv + 0);
+  // x->input[15] = U8TO32_LITTLE(iv + 4);
+}
+
 void ECRYPT_print(ECRYPT_ctx *x)
 {
   for(int i=0;i<16;i++){
@@ -301,28 +310,30 @@ FUZZ_TARGET(crypto_compare_chacha20)
 	      const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32));
         chacha20 = ChaCha20{key.data(), key.size()};
         ECRYPT_keysetup(&ctx,key.data(),key.size()*8);
-        // uint64_t iv=0;
-        // ECRYPT_ivsetup(&ctx, (u8 *)&iv);
-        u8 iv[8] = {0,0,0,0,0,0,0,0};
-        ECRYPT_ivsetup(&ctx, iv);
+        uint64_t iv=0;
+        ECRYPT_ivsetup(&ctx, (u8 *)&iv);
+        fprintf(stderr, "----I'm inside if and changing Daniel+Bitcoin Keys & iv+counter also as 0---------\n");
     }
     while (fuzzed_data_provider.ConsumeBool()) {
         CallOneOf(
             fuzzed_data_provider,
             [&] {
-	    	      size_t cir=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32);
-              const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, cir);
+	    	      // size_t cir=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32);
+              const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32));
               chacha20.SetKey(key.data(), key.size());
+              fprintf(stderr, "--------Bitcoin's Key changed----------\n");
 		// ECRYPT_keysetup(&ctx,key.data(),key.size()*8);//Wouldn't *8 cause a problem? unsigned char is ideally uint8_t and u32is the type of that argument.
             },
             [&] {
-	    	      uint64_t iv=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
-              chacha20.SetIV(iv);
+	    	      // uint64_t iv=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
+              chacha20.SetIV(fuzzed_data_provider.ConsumeIntegral<uint64_t>());
+              fprintf(stderr, "--------Bitcoin's IV/nonce(14+15) changed----------\n");
 		// ECRYPT_ivsetup(&ctx,(u8 *)&iv); //actual type is const u8 *, wouldn't passing uint64_t cause problems? of course it would, let's change DJB's function? -- critical!!!
             },
             [&] {
-              uint64_t counter=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
-              chacha20.Seek(counter);
+              // uint64_t counter=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
+              chacha20.Seek(fuzzed_data_provider.ConsumeIntegral<uint64_t>());
+              fprintf(stderr, "--------Bitcoin's Counter(12+13) changed----------\n");
             },
             [&] {
 	    	      uint32_t integralInRange=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);//why 4096?
