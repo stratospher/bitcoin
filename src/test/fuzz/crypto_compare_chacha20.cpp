@@ -107,8 +107,8 @@ void ECRYPT_init(void)
   return;
 }
 
-static const char sigma[17] = "expand 32-byte k";
-static const char tau[17] = "expand 16-byte k";
+static const char sigma[] = "expand 32-byte k";
+static const char tau[] = "expand 16-byte k";
 
 void ECRYPT_keysetup(ECRYPT_ctx *x,const u8 *k,u32 kbits)
 {
@@ -132,12 +132,16 @@ void ECRYPT_keysetup(ECRYPT_ctx *x,const u8 *k,u32 kbits)
   x->input[1] = U8TO32_LITTLE(constants + 4);
   x->input[2] = U8TO32_LITTLE(constants + 8);
   x->input[3] = U8TO32_LITTLE(constants + 12);
+  x->input[12] = 0; //added this to make it consistent with bitcoin-core !!! Remove(Yes/No)??
+  x->input[13] = 0; //added this to make it consistent with bitcoin-core !!! Remove(Yes/No)??
+  x->input[14] = 0; //added this to make it consistent with bitcoin-core !!! Remove(Yes/No)??
+  x->input[15] = 0; //added this to make it consistent with bitcoin-core !!! Remove(Yes/No)??
 }
 
 void ECRYPT_ivsetup(ECRYPT_ctx *x,const u8 *iv)
 {
-  x->input[12] = 0;
-  x->input[13] = 0;
+  // x->input[12] = 0;  //This is modified version - It's set to 0 in Daniel;s code !!! Remove(Yes/No)??
+  // x->input[13] = 0;  //This is modified version - It's set to 0 in Daniel;s code !!! Remove(Yes/No)??
   x->input[14] = U8TO32_LITTLE(iv + 0); //pass same type of inputs - try both ways!!!--critical
   x->input[15] = U8TO32_LITTLE(iv + 4);
 }
@@ -303,39 +307,57 @@ void ECRYPT_keystream_bytes(ECRYPT_ctx *x,u8 *stream,u32 bytes)
 
 FUZZ_TARGET(crypto_compare_chacha20)
 {
+    fprintf(stderr, "\n###START########\n");
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
     ECRYPT_ctx ctx;
     if (fuzzed_data_provider.ConsumeBool()) {
+        fprintf(stderr, "\n-------Enter if----------");
 	      const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32));
         chacha20 = ChaCha20{key.data(), key.size()};
         ECRYPT_keysetup(&ctx,key.data(),key.size()*8);
-        uint64_t iv=0;
-        ECRYPT_ivsetup(&ctx, (u8 *)&iv);
-        fprintf(stderr, "----I'm inside if and changing Daniel+Bitcoin Keys & iv+counter also as 0---------\n");
+        // fprintf(stderr, "----I'm inside if and changing Daniel+Bitcoin Keys & iv+counter also as 0---------\n");
+        // fprintf(stderr, "This is Daniel's initial matrix\n");
+        // ECRYPT_print(&ctx);
+        // fprintf(stderr, "This is Bitcoin's initial matrix\n");
+        // chacha20.PrintInput();
+        // fprintf(stderr,"\n----------------------------------\n");
+        fprintf(stderr, "\n-------Exit if----------");
     }
     while (fuzzed_data_provider.ConsumeBool()) {
         CallOneOf(
             fuzzed_data_provider,
             [&] {
-	    	      // size_t cir=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32);
-              const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32));
+              fprintf(stderr, "\n-------Enter case 0(SetKey)----------");
+	    	      size_t cir=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32);
+              const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, cir);
               chacha20.SetKey(key.data(), key.size());
-              fprintf(stderr, "--------Bitcoin's Key changed----------\n");
-		// ECRYPT_keysetup(&ctx,key.data(),key.size()*8);//Wouldn't *8 cause a problem? unsigned char is ideally uint8_t and u32is the type of that argument.
+              // fprintf(stderr, "\n------- Key changed to ---------\n");
+              // for(unsigned long i=0;i<key.size();i++){
+              //   fprintf(stderr, "%d ",key[i]);//printing character as a decimal
+              // }
+              // fprintf(stderr, "\n----Key change over---\n");
+		          ECRYPT_keysetup(&ctx,key.data(),key.size()*8);//Wouldn't *8 cause a problem? unsigned char is ideally uint8_t and u32is the type of that argument.
+              fprintf(stderr, "\n-------Exit case 0----------");
             },
             [&] {
-	    	      // uint64_t iv=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
-              chacha20.SetIV(fuzzed_data_provider.ConsumeIntegral<uint64_t>());
-              fprintf(stderr, "--------Bitcoin's IV/nonce(14+15) changed----------\n");
-		// ECRYPT_ivsetup(&ctx,(u8 *)&iv); //actual type is const u8 *, wouldn't passing uint64_t cause problems? of course it would, let's change DJB's function? -- critical!!!
+              fprintf(stderr, "\n-------Enter case 1(SetIV)----------");
+	    	      uint64_t iv=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
+              chacha20.SetIV(iv);
+              // fprintf(stderr, "----IV/nonce(14+15) changed to %lu---------\n",iv);
+		          ECRYPT_ivsetup(&ctx,(u8 *)&iv); //actual type is const u8 *, wouldn't passing uint64_t cause problems? of course it would, let's change DJB's function? -- critical!!!
+              fprintf(stderr, "\n-------Exit case 1----------");
             },
             [&] {
-              // uint64_t counter=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
-              chacha20.Seek(fuzzed_data_provider.ConsumeIntegral<uint64_t>());
-              fprintf(stderr, "--------Bitcoin's Counter(12+13) changed----------\n");
+              fprintf(stderr, "\n-------Enter case 2(SetCounter)----------");
+              uint64_t counter=fuzzed_data_provider.ConsumeIntegral<uint64_t>();
+              chacha20.Seek(counter);
+              ECRYPT_countersetup(&ctx,(u8 *)&counter); //actual type is const u8 *, wouldn't passing uint64_t cause problems? of course it would, let's change DJB's function? -- critical!!!
+              // fprintf(stderr, "--------Counter(12+13) changed to %lu---------\n",counter);
+              fprintf(stderr, "\n-------Exit case 2----------");
             },
             [&] {
+              fprintf(stderr, "\n-------Enter case 3(KeyStream)----------");
 	    	      uint32_t integralInRange=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);//why 4096?
 		          std::vector<uint8_t> output(integralInRange);
               chacha20.Keystream(output.data(), output.size());
@@ -343,28 +365,33 @@ FUZZ_TARGET(crypto_compare_chacha20)
               ECRYPT_keystream_bytes(&ctx, output2.data(), output2.size()); //Arguments should ideally be (,u8*,u32) and we are ideally passing (,u8*, u32) --- ok 
               if(output.data()!=NULL && output2.data()!=NULL){
                 if(memcmp(output.data(),output2.data(),integralInRange)==0){
-                    fprintf(stderr, "--------bytes match---------\n");
+                    fprintf(stderr, "--------keystream match---------\n");
                     // std::string str(output.begin(), output.end());
                     // fprintf(stderr, "str: %s\n",str.c_str());
                     // std::string str2(output2.begin(), output2.end());
                     // fprintf(stderr, "str2: %s\n",str2.c_str());
                     fprintf(stderr, "-----------------------------\n");
                 }else{
-                    fprintf(stderr, "--!--!-!---bytes don't match-!--!--!-\n");
+                    fprintf(stderr, "--!--!-!---keystream don't match-!--!--!-\n");
                     fprintf(stderr, "This is Daniel's\n");
                     ECRYPT_print(&ctx);
                     fprintf(stderr, "This is Bitcoin's\n");
                     chacha20.PrintInput();
                     fprintf(stderr, "--!---!---!---!----!--!--!--\n");
                 }
-              } 
-            
+              }
+              fprintf(stderr, "\n-------Exit case 3----------");
             },
             [&] {
+                fprintf(stderr, "\n-------Enter case 4(Encryption)----------");
 		            uint32_t integralInRange=fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                 std::vector<uint8_t> output(integralInRange);
                 const std::vector<uint8_t> input = ConsumeFixedLengthByteVector(fuzzed_data_provider, output.size());
                 chacha20.Crypt(input.data(), output.data(), input.size());
+                std::vector<uint8_t> output2(integralInRange);
+                ECRYPT_encrypt_bytes(&ctx, input.data(), output2.data(), input.size());
+                fprintf(stderr, "--------Exit case 4---------\n");
             });
     }
+    fprintf(stderr, "\n###STOP########");
 }
