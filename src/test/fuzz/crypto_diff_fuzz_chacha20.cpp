@@ -297,7 +297,7 @@ FUZZ_TARGET(crypto_diff_fuzz_chacha20)
                 chacha20.SetKey(key.data(), key.size());
                 ECRYPT_keysetup(&ctx, key.data(), key.size() * 8, 0);
                 // ECRYPT_keysetup() doesn't set the counter and nonce to 0 while SetKey() does
-		uint8_t iv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+                uint8_t iv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
                 ECRYPT_ivsetup(&ctx, iv);
             },
             [&] {
@@ -332,4 +332,3 @@ FUZZ_TARGET(crypto_diff_fuzz_chacha20)
             });
     }
 }
-
