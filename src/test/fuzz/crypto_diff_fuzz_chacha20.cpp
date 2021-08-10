@@ -289,7 +289,7 @@ FUZZ_TARGET(crypto_diff_fuzz_chacha20)
         ECRYPT_ivsetup(&ctx, iv);
     }
 
-    while (fuzzed_data_provider.ConsumeBool()) {
+    while (fuzzed_data_provider.ConsumeIntegralInRange<uint32_t>(0, 100) >= 10) {
         CallOneOf(
             fuzzed_data_provider,
             [&] {
