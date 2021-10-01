@@ -2,10 +2,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <compat/endian.h>
 #include <crypto/chacha_poly_aead.h>
 #include <key.h>
 #include <net.h>
 #include <netmessagemaker.h>
+#include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 
 #include <cassert>
@@ -18,9 +20,21 @@ FUZZ_TARGET(p2p_v2_transport_serialization)
     // Construct deserializer, with a dummy NodeId
     V2TransportDeserializer deserializer{(NodeId)0, k1, k2};
     V2TransportSerializer serializer{k1, k2};
+    FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
 
-    while (buffer.size() > 0) {
-        const int handled = deserializer.Read(buffer);
+    bool length_assist = fuzzed_data_provider.ConsumeBool();
+    auto payload_bytes = fuzzed_data_provider.ConsumeRemainingBytes<uint8_t>();
+
+    if (length_assist && payload_bytes.size() >= CHACHA20_POLY1305_AEAD_AAD_LEN + CHACHA20_POLY1305_AEAD_TAG_LEN) {
+        uint32_t packet_length = payload_bytes.size() - CHACHA20_POLY1305_AEAD_AAD_LEN - CHACHA20_POLY1305_AEAD_TAG_LEN;
+        payload_bytes[0] = packet_length & 0xff;
+        payload_bytes[1] = (packet_length >> 8) & 0xff;
+        payload_bytes[2] = (packet_length >> 16) & 0xff;
+    }
+
+    Span<const uint8_t> msg_bytes{payload_bytes};
+    while (msg_bytes.size() > 0) {
+        const int handled = deserializer.Read(msg_bytes);
         if (handled < 0) {
             break;
         }
