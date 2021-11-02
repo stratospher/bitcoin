@@ -63,6 +63,7 @@ endif
 
 # test_bitcoin binary #
 BITCOIN_TESTS =\
+  test/aead_v2_tests.cpp \
   test/arith_uint256_tests.cpp \
   test/scriptnum10.h \
   test/addrman_tests.cpp \
