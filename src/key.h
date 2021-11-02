@@ -7,11 +7,17 @@
 #ifndef BITCOIN_KEY_H
 #define BITCOIN_KEY_H
 
+#include <crypto/sha256.h>
+#include <hash.h>
 #include <pubkey.h>
 #include <serialize.h>
+#include <span.h>
 #include <support/allocators/secure.h>
 #include <uint256.h>
 
+#include <array>
+#include <cstddef>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -21,6 +27,12 @@
  * (SIZE bytes)
  */
 typedef std::vector<unsigned char, secure_allocator<unsigned char> > CPrivKey;
+
+constexpr static size_t ECDH_SECRET_SIZE = CSHA256::OUTPUT_SIZE;
+const auto HASHER_BIP324_ECDH = TaggedHash("secp256k1_ellswift_xonly_ecdh");
+
+// Used to represent a ECDH secret (ECDH_SECRET_SIZE bytes)
+using ECDHSecret = std::array<std::byte, ECDH_SECRET_SIZE>;
 
 /** An encapsulated private key. */
 class CKey
@@ -36,8 +48,8 @@ public:
      * script supports up to 75 for single byte push
      */
     static_assert(
-        SIZE >= COMPRESSED_SIZE,
-        "COMPRESSED_SIZE is larger than SIZE");
+            SIZE >= COMPRESSED_SIZE,
+    "COMPRESSED_SIZE is larger than SIZE");
 
 private:
     //! Whether this private key is valid. We check for correctness when modifying the key
@@ -64,8 +76,8 @@ public:
     friend bool operator==(const CKey& a, const CKey& b)
     {
         return a.fCompressed == b.fCompressed &&
-            a.size() == b.size() &&
-            memcmp(a.keydata.data(), b.keydata.data(), a.size()) == 0;
+               a.size() == b.size() &&
+               memcmp(a.keydata.data(), b.keydata.data(), a.size()) == 0;
     }
 
     //! Initialize using begin and end iterators to byte data.
@@ -156,6 +168,13 @@ public:
 
     //! Load private key and check that public key matches.
     bool Load(const CPrivKey& privkey, const CPubKey& vchPubKey, bool fSkipCheck);
+
+    std::optional<EllSwiftPubKey> EllSwiftEncode(const std::array<uint8_t, 32>& rnd32) const;
+
+    // Returns false if an invalid public key is provided
+    std::optional<ECDHSecret> ComputeBIP324ECDHSecret(const Span<const std::byte> their_ellswift,
+                                                      const Span<const std::byte> our_ellswift,
+                                                      bool initiating) const;
 };
 
 struct CExtKey {
@@ -168,10 +187,10 @@ struct CExtKey {
     friend bool operator==(const CExtKey& a, const CExtKey& b)
     {
         return a.nDepth == b.nDepth &&
-            memcmp(a.vchFingerprint, b.vchFingerprint, sizeof(vchFingerprint)) == 0 &&
-            a.nChild == b.nChild &&
-            a.chaincode == b.chaincode &&
-            a.key == b.key;
+               memcmp(a.vchFingerprint, b.vchFingerprint, sizeof(vchFingerprint)) == 0 &&
+               a.nChild == b.nChild &&
+               a.chaincode == b.chaincode &&
+               a.key == b.key;
     }
 
     void Encode(unsigned char code[BIP32_EXTKEY_SIZE]) const;

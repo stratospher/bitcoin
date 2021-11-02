@@ -9,20 +9,25 @@
 #include <chainparams.h>
 #include <common/bloom.h>
 #include <compat/compat.h>
-#include <node/connection_types.h>
 #include <consensus/amount.h>
+#include <crypto/bip324_suite.h>
+#include <crypto/rfc8439.h>
 #include <crypto/siphash.h>
 #include <hash.h>
 #include <i2p.h>
+#include <key.h>
 #include <net_permissions.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <netgroup.h>
+#include <node/connection_types.h>
 #include <policy/feerate.h>
 #include <protocol.h>
+#include <pubkey.h>
 #include <random.h>
 #include <span.h>
 #include <streams.h>
+#include <support/allocators/secure.h>
 #include <sync.h>
 #include <threadinterrupt.h>
 #include <uint256.h>
@@ -31,6 +36,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -39,6 +45,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 class AddrMan;
@@ -89,11 +96,18 @@ static constexpr bool DEFAULT_FIXEDSEEDS{true};
 static const size_t DEFAULT_MAXRECEIVEBUFFER = 5 * 1000;
 static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
+static constexpr size_t V2_MIN_MESSAGE_LENGTH = BIP324_LENGTH_FIELD_LEN + BIP324_HEADER_LEN + RFC8439_TAGLEN;
+static constexpr bool DEFAULT_V2_TRANSPORT{false};
+
 typedef int64_t NodeId;
 
-struct AddedNodeInfo
-{
-    std::string strAddedNode;
+struct AddedNodeParams {
+    std::string m_added_node;
+    bool m_use_p2p_v2;
+};
+
+struct AddedNodeInfo {
+    AddedNodeParams m_params;
     CService resolvedAddress;
     bool fConnected;
     bool fInbound;
@@ -119,6 +133,7 @@ struct CSerializedNetMsg {
     }
 
     std::vector<unsigned char> data;
+    std::vector<std::byte> aad; // associated authenticated data for encrypted BIP324 (v2) transport
     std::string m_type;
 };
 
@@ -253,7 +268,10 @@ public:
     /** read and deserialize data, advances msg_bytes data pointer */
     virtual int Read(Span<const uint8_t>& msg_bytes) = 0;
     // decomposes a message from the context
-    virtual CNetMessage GetMessage(std::chrono::microseconds time, bool& reject_message) = 0;
+    virtual CNetMessage GetMessage(std::chrono::microseconds time,
+                                   bool& reject_message,
+                                   bool& disconnect,
+                                   Span<const std::byte> aad) = 0;
     virtual ~TransportDeserializer() {}
 };
 
@@ -288,10 +306,10 @@ private:
 
 public:
     V1TransportDeserializer(const CChainParams& chain_params, const NodeId node_id, int nTypeIn, int nVersionIn)
-        : m_chain_params(chain_params),
-          m_node_id(node_id),
-          hdrbuf(nTypeIn, nVersionIn),
-          vRecv(nTypeIn, nVersionIn)
+            : m_chain_params(chain_params),
+              m_node_id(node_id),
+              hdrbuf(nTypeIn, nVersionIn),
+              vRecv(nTypeIn, nVersionIn)
     {
         Reset();
     }
@@ -317,7 +335,67 @@ public:
         }
         return ret;
     }
-    CNetMessage GetMessage(std::chrono::microseconds time, bool& reject_message) override;
+    CNetMessage GetMessage(std::chrono::microseconds time,
+                           bool& reject_message,
+                           bool& disconnect,
+                           Span<const std::byte> aad) override;
+};
+
+/** V2TransportDeserializer is a transport deserializer after BIP324 */
+class V2TransportDeserializer final : public TransportDeserializer
+{
+private:
+    std::unique_ptr<BIP324CipherSuite> m_cipher_suite;
+    const NodeId m_node_id;                       // Only for logging
+    bool m_in_data = false;                       // parsing header (false) or data (true)
+    size_t m_message_size = 0;                    // expected message size
+    CDataStream vRecv;                            // received message data (encrypted length, payload ciphertext, MAC tag)
+    size_t m_hdr_pos = 0;                         // read pos in header
+    size_t m_data_pos = 0;                        // read pos in data
+    bool m_processed_version_placeholder = false; // BIP324 transport version message has been received
+
+public:
+    V2TransportDeserializer(const NodeId node_id, const BIP324Key& key_l, const BIP324Key& key_p, const BIP324Key& rekey_salt) : m_cipher_suite(new BIP324CipherSuite(key_l, key_p, rekey_salt)), m_node_id(node_id), vRecv(SER_NETWORK, INIT_PROTO_VERSION)
+    {
+        Reset();
+    }
+
+    void Reset()
+    {
+        vRecv.clear();
+        vRecv.resize(BIP324_LENGTH_FIELD_LEN);
+        m_in_data = false;
+        m_hdr_pos = 0;
+        m_message_size = 0;
+        m_data_pos = 0;
+    }
+    bool Complete() const override
+    {
+        if (!m_in_data) {
+            return false;
+        }
+        return (BIP324_HEADER_LEN + m_message_size + RFC8439_TAGLEN == m_data_pos);
+    }
+    void SetVersion(int nVersionIn) override
+    {
+        vRecv.SetVersion(nVersionIn);
+    }
+    int readHeader(Span<const uint8_t> msg_bytes);
+    int readData(Span<const uint8_t> msg_bytes);
+    int Read(Span<const uint8_t>& msg_bytes) override
+    {
+        int ret = m_in_data ? readData(msg_bytes) : readHeader(msg_bytes);
+        if (ret < 0) {
+            Reset();
+        } else {
+            msg_bytes = msg_bytes.subspan(ret);
+        }
+        return ret;
+    }
+    CNetMessage GetMessage(const std::chrono::microseconds time,
+                           bool& reject_message,
+                           bool& disconnect,
+                           Span<const std::byte> aad) override;
 };
 
 /** The TransportSerializer prepares messages for the network transport
@@ -325,13 +403,25 @@ public:
 class TransportSerializer {
 public:
     // prepare message for transport (header construction, error-correction computation, payload encryption, etc.)
-    virtual void prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) const = 0;
+    virtual bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) const = 0;
     virtual ~TransportSerializer() {}
 };
 
-class V1TransportSerializer : public TransportSerializer {
+class V1TransportSerializer : public TransportSerializer
+{
 public:
-    void prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) const override;
+    bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) const override;
+};
+
+class V2TransportSerializer : public TransportSerializer
+{
+private:
+    std::unique_ptr<BIP324CipherSuite> m_cipher_suite;
+
+public:
+    V2TransportSerializer(const BIP324Key& key_l, const BIP324Key& key_p, const BIP324Key& rekey_salt) : m_cipher_suite(new BIP324CipherSuite(key_l, key_p, rekey_salt)) {}
+    // prepare for next message
+    bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) const override;
 };
 
 struct CNodeOptions
@@ -341,15 +431,29 @@ struct CNodeOptions
     bool prefer_evict = false;
 };
 
+constexpr size_t BIP324_GARBAGE_TERMINATOR_LEN = 8;
+
+struct BIP324Keys {
+    BIP324Key initiator_L;
+    BIP324Key initiator_P;
+    BIP324Key responder_L;
+    BIP324Key responder_P;
+    BIP324Key session_id;
+    BIP324Key rekey_salt;
+    std::vector<std::byte, secure_allocator<std::byte>> garbage_terminator;
+};
+
+void DeriveBIP324Keys(ECDHSecret&& ecdh_secret, BIP324Keys& derived_keys);
+
 /** Information about a peer */
 class CNode
 {
     friend class CConnman;
-    friend struct ConnmanTestMsg;
+    friend class ConnmanTestMsg;
 
 public:
-    const std::unique_ptr<TransportDeserializer> m_deserializer; // Used only by SocketHandler thread
-    const std::unique_ptr<const TransportSerializer> m_serializer;
+    std::unique_ptr<TransportDeserializer> m_deserializer; // Used only by SocketHandler thread
+    std::unique_ptr<const TransportSerializer> m_serializer;
 
     const NetPermissionFlags m_permission_flags;
 
@@ -415,6 +519,8 @@ public:
     const uint64_t nKeyedNetGroup;
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
+    std::atomic_bool tried_v2_handshake{false};
+    std::atomic_bool m_authenticated_v2_garbage{false};
 
     bool IsOutboundOrBlockRelayConn() const {
         switch (m_conn_type) {
@@ -453,6 +559,11 @@ public:
 
     bool IsInboundConn() const {
         return m_conn_type == ConnectionType::INBOUND;
+    }
+
+    bool PreferV2Conn() const
+    {
+        return m_prefer_p2p_v2;
     }
 
     bool ExpectServicesFromConn() const {
@@ -520,6 +631,8 @@ public:
      * criterium in CConnman::AttemptToEvictConnection. */
     std::atomic<std::chrono::microseconds> m_min_ping_time{std::chrono::microseconds::max()};
 
+    EllSwiftPubKey ellswift_pubkey;
+
     CNode(NodeId id,
           std::shared_ptr<Sock> sock,
           const CAddress& addrIn,
@@ -529,7 +642,8 @@ public:
           const std::string& addrNameIn,
           ConnectionType conn_type_in,
           bool inbound_onion,
-          CNodeOptions&& node_opts = {});
+          CNodeOptions&& node_opts = {},
+          bool prefer_p2p_v2 = false);
     CNode(const CNode&) = delete;
     CNode& operator=(const CNode&) = delete;
 
@@ -595,6 +709,9 @@ public:
         m_min_ping_time = std::min(m_min_ping_time.load(), ping_time);
     }
 
+    void InitV2P2P(const Span<const std::byte> initiator_ellswift, const Span<const std::byte> responder_ellswift, bool initiating);
+    void EnsureInitV2Key(bool initiating);
+
 private:
     const NodeId id;
     const uint64_t nLocalHostNonce;
@@ -602,6 +719,11 @@ private:
     std::atomic<int> m_greatest_common_version{INIT_PROTO_VERSION};
 
     std::list<CNetMessage> vRecvMsg; // Used only by SocketHandler thread
+    CKey v2_priv_key;
+    std::vector<std::byte, secure_allocator<std::byte>> v2_garbage_terminator;
+    std::vector<std::byte> v2_garbage_bytes_recd;
+    bool v2_keys_derived{false};
+    bool v2_garbage_terminated{false};
 
     // Our address, as reported by the peer
     CService addrLocal GUARDED_BY(m_addr_local_mutex);
@@ -621,6 +743,9 @@ private:
      * Otherwise this unique_ptr is empty.
      */
     std::unique_ptr<i2p::sam::Session> m_i2p_sam_session GUARDED_BY(m_sock_mutex);
+
+    // Peer prefers a BIP324(v2) p2p transport
+    bool m_prefer_p2p_v2;
 };
 
 /**
@@ -631,6 +756,9 @@ class NetEventsInterface
 public:
     /** Initialize a peer (setup state, queue any initial messages) */
     virtual void InitializeNode(CNode& node, ServiceFlags our_services) = 0;
+
+    /** Initialize the P2P protocol with a peer */
+    virtual void InitP2P(CNode& pnode, ServiceFlags our_services) = 0;
 
     /** Handle removal of a peer (clear state) */
     virtual void FinalizeNode(const CNode& node) = 0;
@@ -719,15 +847,18 @@ public:
         vWhitelistedRange = connOptions.vWhitelistedRange;
         {
             LOCK(m_added_nodes_mutex);
-            m_added_nodes = connOptions.m_added_nodes;
+
+            for (const std::string& strAddedNode : connOptions.m_added_nodes) {
+                // -addnode cli arg does not currently have a way to signal BIP324 support
+                m_added_nodes.push_back({strAddedNode, false});
+            }
         }
         m_onion_binds = connOptions.onion_binds;
     }
 
     CConnman(uint64_t seed0, uint64_t seed1, AddrMan& addrman, const NetGroupManager& netgroupman,
              bool network_active = true);
-
-    ~CConnman();
+    virtual ~CConnman();
 
     bool Start(CScheduler& scheduler, const Options& options) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex, !m_added_nodes_mutex, !m_addr_fetches_mutex, !mutexMsgProc);
 
@@ -743,12 +874,14 @@ public:
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
     void SetNetworkActive(bool active);
-    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant* grantOutbound, const char* strDest, ConnectionType conn_type);
+    void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CSemaphoreGrant* grantOutbound, const char* strDest, ConnectionType conn_type) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
 
     void PushMessage(CNode* pnode, CSerializedNetMsg&& msg) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
+    void PushV2EllSwiftPubkey(CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
+    void PushV2GarbageTerminator(CNode* pnode);
 
     using NodeFn = std::function<void(CNode*)>;
     void ForEachNode(const NodeFn& func)
@@ -803,7 +936,7 @@ public:
     // Count the number of block-relay-only peers we have over our limit.
     int GetExtraBlockRelayCount() const;
 
-    bool AddNode(const std::string& node) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
+    bool AddNode(const AddedNodeParams& added_node_params) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     bool RemoveAddedNode(const std::string& node) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     std::vector<AddedNodeInfo> GetAddedNodeInfo() const EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
 
@@ -819,7 +952,7 @@ public:
      *                          - Max total outbound connection capacity filled
      *                          - Max connection capacity for type is filled
      */
-    bool AddConnection(const std::string& address, ConnectionType conn_type);
+    bool AddConnection(const std::string& address, ConnectionType conn_type) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
 
     size_t GetNodeCount(ConnectionDirection) const;
     void GetNodeStats(std::vector<CNodeStats>& vstats) const;
@@ -833,7 +966,7 @@ public:
     //!
     //! The data returned by this is used in CNode construction,
     //! which is used to advertise which services we are offering
-    //! that peer during `net_processing.cpp:PushNodeVersion()`.
+    //! that peer during `net_processing.cpp:InitP2P()`.
     ServiceFlags GetLocalServices() const;
 
     uint64_t GetMaxOutboundTarget() const EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
@@ -869,7 +1002,7 @@ private:
         std::shared_ptr<Sock> sock;
         inline void AddSocketPermissionFlags(NetPermissionFlags& flags) const { NetPermissions::AddFlag(flags, m_permissions); }
         ListenSocket(std::shared_ptr<Sock> sock_, NetPermissionFlags permissions_)
-            : sock{sock_}, m_permissions{permissions_}
+                : sock{sock_}, m_permissions{permissions_}
         {
         }
 
@@ -885,10 +1018,10 @@ private:
     bool Bind(const CService& addr, unsigned int flags, NetPermissionFlags permissions);
     bool InitBinds(const Options& options);
 
-    void ThreadOpenAddedConnections() EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
+    void ThreadOpenAddedConnections() EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex, !m_total_bytes_sent_mutex);
     void AddAddrFetch(const std::string& strDest) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex);
-    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex);
-    void ThreadOpenConnections(std::vector<std::string> connect) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_added_nodes_mutex, !m_nodes_mutex);
+    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_total_bytes_sent_mutex);
+    void ThreadOpenConnections(std::vector<std::string> connect) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_added_nodes_mutex, !m_nodes_mutex, !m_total_bytes_sent_mutex);
     void ThreadMessageHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
     void ThreadI2PAcceptIncoming();
     void AcceptConnection(const ListenSocket& hListenSocket);
@@ -930,7 +1063,7 @@ private:
      */
     void SocketHandlerConnected(const std::vector<CNode*>& nodes,
                                 const Sock::EventsPerSock& events_per_sock)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex, !mutexMsgProc);
+    EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex, !mutexMsgProc);
 
     /**
      * Accept incoming connections, one from each read-ready listening socket.
@@ -1004,7 +1137,10 @@ private:
     const NetGroupManager& m_netgroupman;
     std::deque<std::string> m_addr_fetches GUARDED_BY(m_addr_fetches_mutex);
     Mutex m_addr_fetches_mutex;
-    std::vector<std::string> m_added_nodes GUARDED_BY(m_added_nodes_mutex);
+
+    // connection string and whether to use v2 p2p
+    std::vector<AddedNodeParams> m_added_nodes GUARDED_BY(m_added_nodes_mutex);
+
     mutable Mutex m_added_nodes_mutex;
     std::vector<CNode*> m_nodes GUARDED_BY(m_nodes_mutex);
     std::list<CNode*> m_nodes_disconnected;
@@ -1164,7 +1300,7 @@ private:
     };
 
     friend struct CConnmanTest;
-    friend struct ConnmanTestMsg;
+    friend class ConnmanTestMsg;
 };
 
 /** Dump binary message to file, with timestamp */
@@ -1178,6 +1314,6 @@ extern std::function<void(const CAddress& addr,
                           const std::string& msg_type,
                           Span<const unsigned char> data,
                           bool is_incoming)>
-    CaptureMessage;
+        CaptureMessage;
 
 #endif // BITCOIN_NET_H

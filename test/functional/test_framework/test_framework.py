@@ -578,22 +578,28 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     def wait_for_node_exit(self, i, timeout):
         self.nodes[i].process.wait(timeout)
 
-    def connect_nodes(self, a, b):
+    def connect_nodes(self, a, b, peer_advertises_v2=False):
         from_connection = self.nodes[a]
         to_connection = self.nodes[b]
-        from_num_peers = 1 + len(from_connection.getpeerinfo())
-        to_num_peers = 1 + len(to_connection.getpeerinfo())
         ip_port = "127.0.0.1:" + str(p2p_port(b))
-        from_connection.addnode(ip_port, "onetry")
+        from_connection.addnode(ip_port, "onetry", peer_advertises_v2)
+        min_verack_msg_bytes = 21 if peer_advertises_v2 else 24
         # poll until version handshake complete to avoid race conditions
         # with transaction relaying
         # See comments in net_processing:
         # * Must have a version message before anything else
         # * Must have a verack message before anything else
-        self.wait_until(lambda: sum(peer['version'] != 0 for peer in from_connection.getpeerinfo()) == from_num_peers)
-        self.wait_until(lambda: sum(peer['version'] != 0 for peer in to_connection.getpeerinfo()) == to_num_peers)
-        self.wait_until(lambda: sum(peer['bytesrecv_per_msg'].pop('verack', 0) == 24 for peer in from_connection.getpeerinfo()) == from_num_peers)
-        self.wait_until(lambda: sum(peer['bytesrecv_per_msg'].pop('verack', 0) == 24 for peer in to_connection.getpeerinfo()) == to_num_peers)
+
+        def check_from_peer_handshake():
+            to_peer = list(filter(lambda x: x["addr"] == ip_port, from_connection.getpeerinfo()))[0]
+            return to_peer['version'] and to_peer['bytesrecv_per_msg'].pop('verack', 0) >= min_verack_msg_bytes
+
+        def check_to_peer_handshake():
+            from_peer = list(filter(lambda x: x["addrbind"] == ip_port, to_connection.getpeerinfo()))[0]
+            return from_peer['version'] and from_peer['bytesrecv_per_msg'].pop('verack', 0) >= min_verack_msg_bytes
+
+        self.wait_until(check_from_peer_handshake)
+        self.wait_until(check_to_peer_handshake)
 
     def disconnect_nodes(self, a, b):
         def disconnect_nodes_helper(from_connection, node_num):

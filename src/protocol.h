@@ -261,7 +261,16 @@ extern const char* WTXIDRELAY;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */
-const std::vector<std::string>& getAllNetMessageTypes();
+const std::map<uint8_t, std::string>& getAllNetMessageTypes();
+
+/** Short message type IDs are a low bandwidth representations of a message type
+ *   The mapping is a peer to peer agreement (initially defined in BIP324)
+ *
+ *   returns the short ID for a message type (if known) */
+std::optional<uint8_t> GetShortIDFromMessageType(const std::string& message_type);
+
+/** returns the message type (string) from a short ID (as initially defined in BIP324) */
+std::optional<std::string> GetMessageTypeFromShortID(const uint8_t shortID);
 
 /** nServices flags */
 enum ServiceFlags : uint64_t {
@@ -285,6 +294,9 @@ enum ServiceFlags : uint64_t {
     // serving the last 288 (2 day) blocks
     // See BIP159 for details on how this is implemented.
     NODE_NETWORK_LIMITED = (1 << 10),
+
+    // NODE_P2P_V2 means the node supports BIP324 transport
+    NODE_P2P_V2 = (1 << 11),
 
     // Bits 24-31 are reserved for temporary experiments. Just pick a bit that
     // isn't getting used, or one not being used much, and notify the
@@ -391,7 +403,7 @@ public:
         // be hashed (except through CHashWriter in addrdb.cpp, which sets SER_DISK), and it's
         // ambiguous what that would mean. Make sure no code relying on that is introduced:
         assert(!(s.GetType() & SER_GETHASH));
-        bool use_v2;
+        bool use_addr_v2;
         if (s.GetType() & SER_DISK) {
             // In the disk serialization format, the encoding (v1 or v2) is determined by a flag version
             // that's part of the serialization itself. ADDRV2_FORMAT in the stream version only determines
@@ -401,10 +413,10 @@ public:
             READWRITE(stored_format_version);
             stored_format_version &= ~DISK_VERSION_IGNORE_MASK; // ignore low bits
             if (stored_format_version == 0) {
-                use_v2 = false;
+                use_addr_v2 = false;
             } else if (stored_format_version == DISK_VERSION_ADDRV2 && (s.GetVersion() & ADDRV2_FORMAT)) {
                 // Only support v2 deserialization if ADDRV2_FORMAT is set.
-                use_v2 = true;
+                use_addr_v2 = true;
             } else {
                 throw std::ios_base::failure("Unsupported CAddress disk format version");
             }
@@ -413,12 +425,12 @@ public:
             // the value of ADDRV2_FORMAT in the stream version, as no explicitly encoded version
             // exists in the stream.
             assert(s.GetType() & SER_NETWORK);
-            use_v2 = s.GetVersion() & ADDRV2_FORMAT;
+            use_addr_v2 = s.GetVersion() & ADDRV2_FORMAT;
         }
 
         READWRITE(Using<LossyChronoFormatter<uint32_t>>(obj.nTime));
         // nServices is serialized as CompactSize in V2; as uint64_t in V1.
-        if (use_v2) {
+        if (use_addr_v2) {
             uint64_t services_tmp;
             SER_WRITE(obj, services_tmp = obj.nServices);
             READWRITE(Using<CompactSizeFormatter<false>>(services_tmp));
@@ -427,7 +439,7 @@ public:
             READWRITE(Using<CustomUintFormatter<8>>(obj.nServices));
         }
         // Invoke V1/V2 serializer for CService parent object.
-        OverrideStream<Stream> os(&s, s.GetType(), use_v2 ? ADDRV2_FORMAT : 0);
+        OverrideStream<Stream> os(&s, s.GetType(), use_addr_v2 ? ADDRV2_FORMAT : 0);
         SerReadWriteMany(os, ser_action, ReadWriteAsHelper<CService>(obj));
     }
 
