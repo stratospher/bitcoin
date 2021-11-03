@@ -16,9 +16,11 @@
 #include <script/signingprovider.h>
 #include <script/standard.h>
 #include <streams.h>
+#include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <util/strencodings.h>
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <numeric>
@@ -305,4 +307,30 @@ FUZZ_TARGET_INIT(key, initialize_key)
             assert(key == loaded_key);
         }
     }
+}
+
+FUZZ_TARGET_INIT(ellsq, initialize_key)
+{
+    FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
+    auto pubkey_bytes = fuzzed_data_provider.ConsumeBytes<uint8_t>(CPubKey::COMPRESSED_SIZE);
+    pubkey_bytes.resize(CPubKey::COMPRESSED_SIZE);
+    CPubKey pubkey(pubkey_bytes.begin(), pubkey_bytes.end());
+
+    if (!pubkey.IsFullyValid()) {
+        return;
+    }
+
+    auto rnd32 = fuzzed_data_provider.ConsumeBytes<uint8_t>(32);
+    rnd32.resize(32);
+    std::array<uint8_t, 32> rnd32_array;
+    std::copy(rnd32.begin(), rnd32.end(), rnd32_array.begin());
+    auto ellsq_pubkey = pubkey.EllSqEncode(rnd32_array);
+
+    assert(ellsq_pubkey.has_value());
+    assert(ellsq_pubkey->size() == ELLSQ_ENCODED_SIZE);
+
+    CPubKey decoded_pubkey{ellsq_pubkey.value()};
+    assert(decoded_pubkey.IsFullyValid());
+
+    assert(pubkey == decoded_pubkey);
 }
