@@ -344,4 +344,27 @@ BOOST_AUTO_TEST_CASE(bip340_test_vectors)
     }
 }
 
+BOOST_AUTO_TEST_CASE(ecdh)
+{
+    CKey initiator_key = DecodeSecret(strSecret1);
+    CKey responder_key = DecodeSecret(strSecret2C);
+
+    ECDHSecret initiator_secret, responder_secret;
+    BOOST_CHECK(initiator_key.ComputeECDHSecret(responder_key.GetPubKey(), initiator_secret));
+    BOOST_CHECK(responder_key.ComputeECDHSecret(initiator_key.GetPubKey(), responder_secret));
+    BOOST_CHECK_EQUAL(initiator_secret.size(), ECDH_SECRET_SIZE);
+    BOOST_CHECK_EQUAL(responder_secret.size(), ECDH_SECRET_SIZE);
+    BOOST_CHECK_EQUAL(0, memcmp(initiator_secret.data(), responder_secret.data(), ECDH_SECRET_SIZE));
+    BOOST_CHECK_EQUAL("265d994050fcf0c31c948b5e46cb9a5be7f373912d5d2bdf3fcfe053caa6a644", HexStr(initiator_secret));
+    BOOST_CHECK_EQUAL("265d994050fcf0c31c948b5e46cb9a5be7f373912d5d2bdf3fcfe053caa6a644", HexStr(responder_secret));
+
+    // ECDH computation with invalid pubkey
+    std::vector<unsigned char> pubkeydata;
+    auto responder_pubkey = responder_key.GetPubKey();
+    pubkeydata.insert(pubkeydata.end(), responder_pubkey.begin(), responder_pubkey.end());
+    pubkeydata[0] = 0xFF;
+    CPubKey invalid_responder_pubkey(pubkeydata);
+    BOOST_CHECK(!initiator_key.ComputeECDHSecret(invalid_responder_pubkey, initiator_secret));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
