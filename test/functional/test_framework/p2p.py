@@ -124,6 +124,45 @@ MESSAGEMAP = {
     b"wtxidrelay": msg_wtxidrelay,
 }
 
+SHORTID = {
+    13 : b"addr",
+    45 : b"addrv2",
+    14 : b"block",
+    15 : b"blocktxn",
+    42 : b"cfcheckpt",
+    41 : b"cfheaders",
+    39 : b"cfilter",
+    16 : b"cmpctblock",
+    17 : b"feefilter",
+    18 : b"filteradd",
+    19 : b"filterclear",
+    20 : b"filterload",
+    21 : b"getaddr",
+    22 : b"getblocks",
+    23 : b"getblocktxn",
+    24 : b"getdata",
+    25 : b"getheaders",
+    26 : b"headers",
+    27 : b"inv",
+    28 : b"mempool",
+    29 : b"merkleblock",
+    30 : b"notfound",
+    31 : b"ping",
+    32 : b"pong",
+    46 : b"sendaddrv2",
+    33 : b"sendcmpct",
+    34 : b"sendheaders",
+    35 : b"tx",
+    36 : b"verack",
+    37 : b"version",
+    44 : b"wtxidrelay",
+}
+
+def GetShortIDFromMessageType(msgtype):
+    msgtype_to_shortid=dict(map(reversed, SHORTID.items()))
+    assert (msgtype in msgtype_to_shortid)
+    return msgtype_to_shortid[msgtype]
+
 MAGIC_BYTES = {
     "mainnet": b"\xf9\xbe\xb4\xd9",   # mainnet
     "testnet3": b"\x0b\x11\x09\x07",  # testnet3
