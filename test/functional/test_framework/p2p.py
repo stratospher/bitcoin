@@ -188,11 +188,12 @@ class P2PConnection(asyncio.Protocol):
         # The underlying transport of the connection.
         # Should only call methods on this from the NetworkThread, c.f. call_soon_threadsafe
         self._transport = None
+        self.v2 = False # TODO: Need to remove this, NODE_P2P_V2 = (1 << 11) service flag actually signals the v2 support. How to incorportate?
 
     @property
     def is_connected(self):
         return self._transport is not None
-
+    # TODO:
     def peer_connect_helper(self, dstaddr, dstport, net, timeout_factor):
         assert not self.is_connected
         self.timeout_factor = timeout_factor
@@ -202,7 +203,7 @@ class P2PConnection(asyncio.Protocol):
         self.on_connection_send_msg = None
         self.recvbuf = b""
         self.magic_bytes = MAGIC_BYTES[net]
-
+    # TODO:
     def peer_connect(self, dstaddr, dstport, *, net, timeout_factor):
         self.peer_connect_helper(dstaddr, dstport, net, timeout_factor)
 
@@ -210,19 +211,19 @@ class P2PConnection(asyncio.Protocol):
         logger.debug('Connecting to Bitcoin Node: %s:%d' % (self.dstaddr, self.dstport))
         coroutine = loop.create_connection(lambda: self, host=self.dstaddr, port=self.dstport)
         return lambda: loop.call_soon_threadsafe(loop.create_task, coroutine)
-
+    # TODO:
     def peer_accept_connection(self, connect_id, connect_cb=lambda: None, *, net, timeout_factor):
         self.peer_connect_helper('0', 0, net, timeout_factor)
 
         logger.debug('Listening for Bitcoin Node with id: {}'.format(connect_id))
         return lambda: NetworkThread.listen(self, connect_cb, idx=connect_id)
-
+    # TODO:
     def peer_disconnect(self):
         # Connection could have already been closed by other end.
         NetworkThread.network_event_loop.call_soon_threadsafe(lambda: self._transport and self._transport.abort())
 
     # Connection and disconnection methods
-
+    # TODO:
     def connection_made(self, transport):
         """asyncio callback when a connection is opened."""
         assert not self._transport
@@ -232,7 +233,7 @@ class P2PConnection(asyncio.Protocol):
             self.send_message(self.on_connection_send_msg)
             self.on_connection_send_msg = None  # Never used again
         self.on_open()
-
+    # TODO:
     def connection_lost(self, exc):
         """asyncio callback when a connection is closed."""
         if exc:
@@ -258,31 +259,69 @@ class P2PConnection(asyncio.Protocol):
         parses and verifies the P2P header, then passes the P2P payload to
         the on_message callback for processing."""
         try:
-            while True:
-                if len(self.recvbuf) < 4:
-                    return
-                if self.recvbuf[:4] != self.magic_bytes:
-                    raise ValueError("magic bytes mismatch: {} != {}".format(repr(self.magic_bytes), repr(self.recvbuf)))
-                if len(self.recvbuf) < 4 + 12 + 4 + 4:
-                    return
-                msgtype = self.recvbuf[4:4+12].split(b"\x00", 1)[0]
-                msglen = struct.unpack("<i", self.recvbuf[4+12:4+12+4])[0]
-                checksum = self.recvbuf[4+12+4:4+12+4+4]
-                if len(self.recvbuf) < 4 + 12 + 4 + 4 + msglen:
-                    return
-                msg = self.recvbuf[4+12+4+4:4+12+4+4+msglen]
-                th = sha256(msg)
-                h = sha256(th)
-                if checksum != h[:4]:
-                    raise ValueError("got bad checksum " + repr(self.recvbuf))
-                self.recvbuf = self.recvbuf[4+12+4+4+msglen:]
-                if msgtype not in MESSAGEMAP:
-                    raise ValueError("Received unknown msgtype from %s:%d: '%s' %s" % (self.dstaddr, self.dstport, msgtype, repr(msg)))
-                f = BytesIO(msg)
-                t = MESSAGEMAP[msgtype]()
-                t.deserialize(f)
-                self._log_message("receive", t)
-                self.on_message(t)
+            if v2:
+                while True:
+                    if len(self.recvbuf) < CHACHA20_POLY1305_AEAD_AAD_LEN:
+                        return
+                    msglen =  m_aead.DecryptLength(recvbuf[:3]); # TODO
+                    if msglen > V2_MAX_PAYLOAD_LENGTH:
+                        raise ValueError("exceeded max payload length allowed by v2 (2^24 bytes)")
+                    if len(self.recvbuf) < CHACHA20_POLY1305_AEAD_AAD_LEN + msglen + CHACHA20_POLY1305_AEAD_TAG_LEN:
+                        return
+                    if m_aead.Decrypt(self.recvbuf): #  TODO
+                        msg = self.recvbuf[CHACHA20_POLY1305_AEAD_AAD_LEN:-CHACHA20_POLY1305_AEAD_TAG_LEN]
+                        size_or_shortid = msg[0]
+                        if size_or_shortid > 0 and size_or_shortid <= 12:
+                            # a string command
+                            msgtype = msg[1:1+size_or_shortid]
+                            payload = msg[1+size_or_shortid:]
+                        else:
+                            # a short id
+                            if msg[1] in SHORTID:
+                                msgtype = SHORTID[msg[1]]
+                                payload = msg[1:]
+                            else:
+                                msgtype = "unknown-" + str(msg[1])
+                                # comment says "results in a valid but unknown message (will be skipped)"
+                                # 
+                                # TODO: payload = ??
+                                # TODO: Should we continue to L286, constructor wouldn't get called
+                    else:
+                        # TODO: L871 in net.cpp, if we fail to decrypt, what do they mean by 'tolerate'
+                        # why not raise a ValueError?
+                        # what's going to be the difference between a return and raise a ValueError?
+                        return
+                    f = BytesIO(payload)
+                    t = MESSAGEMAP[msgtype]()
+                    t.deserialize(f)
+                    self._log_message("receive", t)
+                    self.on_message(t) 
+            else:
+                while True:
+                    if len(self.recvbuf) < 4:
+                        return
+                    if self.recvbuf[:4] != self.magic_bytes:
+                        raise ValueError("magic bytes mismatch: {} != {}".format(repr(self.magic_bytes), repr(self.recvbuf)))
+                    if len(self.recvbuf) < 4 + 12 + 4 + 4:
+                        return
+                    msgtype = self.recvbuf[4:4+12].split(b"\x00", 1)[0]
+                    msglen = struct.unpack("<i", self.recvbuf[4+12:4+12+4])[0]
+                    checksum = self.recvbuf[4+12+4:4+12+4+4]
+                    if len(self.recvbuf) < 4 + 12 + 4 + 4 + msglen:
+                        return
+                    msg = self.recvbuf[4+12+4+4:4+12+4+4+msglen]
+                    th = sha256(msg)
+                    h = sha256(th)
+                    if checksum != h[:4]:
+                        raise ValueError("got bad checksum " + repr(self.recvbuf))
+                    self.recvbuf = self.recvbuf[4+12+4+4+msglen:]
+                    if msgtype not in MESSAGEMAP:
+                        raise ValueError("Received unknown msgtype from %s:%d: '%s' %s" % (self.dstaddr, self.dstport, msgtype, repr(msg)))
+                    f = BytesIO(msg)
+                    t = MESSAGEMAP[msgtype]()
+                    t.deserialize(f)
+                    self._log_message("receive", t)
+                    self.on_message(t)
         except Exception as e:
             logger.exception('Error reading message:', repr(e))
             raise
@@ -318,17 +357,31 @@ class P2PConnection(asyncio.Protocol):
 
     def build_message(self, message):
         """Build a serialized P2P message"""
-        msgtype = message.msgtype
-        data = message.serialize()
-        tmsg = self.magic_bytes
-        tmsg += msgtype
-        tmsg += b"\x00" * (12 - len(msgtype))
-        tmsg += struct.pack("<I", len(data))
-        th = sha256(data)
-        h = sha256(th)
-        tmsg += h[:4]
-        tmsg += data
-        return tmsg
+        if v2:
+            msgtype = message.msgtype
+            data = message.serialize()
+            assert(len(data)>=0 and len(data)<2**24)
+            tmsg = struct.pack("<I", len(data))[:3] # 3 bytes AAD only allowed, how is this ensured.
+            if msgtype in MESSAGEMAP:
+                tmsg += str(GetShortIDFromMessageType(msgtype))
+            else:
+                tmsg+=len(msgtype)
+                tmsg+=msgtype
+            # Need to append (encrypted payload + MAC tag) here
+            tmsg += Encryption(data) # TODO: AEAD crypto
+            return tmsg
+        else:
+            msgtype = message.msgtype
+            data = message.serialize()
+            tmsg = self.magic_bytes
+            tmsg += msgtype
+            tmsg += b"\x00" * (12 - len(msgtype))
+            tmsg += struct.pack("<I", len(data))    # How is 4 bytes length ensured?
+            th = sha256(data)
+            h = sha256(th)
+            tmsg += h[:4]
+            tmsg += data
+            return tmsg
 
     def _log_message(self, direction, msg):
         """Logs a message being sent or received over the connection."""
