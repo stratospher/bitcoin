@@ -28,6 +28,7 @@
 #include <util/strencodings.h>
 #include <util/syscall_sandbox.h>
 #include <util/system.h>
+#include <util/string.h>
 #include <util/thread.h>
 #include <util/trace.h>
 #include <util/translation.h>
@@ -60,6 +61,8 @@ static constexpr size_t MAX_BLOCK_RELAY_ONLY_ANCHORS = 2;
 static_assert (MAX_BLOCK_RELAY_ONLY_ANCHORS <= static_cast<size_t>(MAX_BLOCK_RELAY_ONLY_CONNECTIONS), "MAX_BLOCK_RELAY_ONLY_ANCHORS must not exceed MAX_BLOCK_RELAY_ONLY_CONNECTIONS.");
 /** Anchor IP address database file name */
 const char* const ANCHORS_DATABASE_FILENAME = "anchors.dat";
+
+static constexpr uint64_t V2_MAX_PAYLOAD_LENGTH = 0x01000000 - 1; // 2^24 - 1
 
 // How often to dump addresses to peers.dat
 static constexpr std::chrono::minutes DUMP_PEERS_INTERVAL{15};
@@ -107,6 +110,8 @@ const std::string NET_MESSAGE_COMMAND_OTHER = "*other*";
 static const uint64_t RANDOMIZER_ID_NETGROUP = 0x6c0edd8036ef4036ULL; // SHA256("netgroup")[0:8]
 static const uint64_t RANDOMIZER_ID_LOCALHOSTNONCE = 0xd93e69e2bbfa5735ULL; // SHA256("localhostnonce")[0:8]
 static const uint64_t RANDOMIZER_ID_ADDRCACHE = 0x1cf2e4ddd306dda9ULL; // SHA256("addrcache")[0:8]
+
+static constexpr uint8_t NET_P2P_V2_CMD_MAX_CHARS_SIZE = 12; //maximal length for V2 (BIP324) string message commands
 //
 // Global state variables
 //
@@ -647,7 +652,14 @@ bool CNode::ReceiveMsgBytes(Span<const uint8_t> msg_bytes, bool& complete)
         if (m_deserializer->Complete()) {
             // decompose a transport agnostic CNetMessage from the deserializer
             bool reject_message{false};
-            CNetMessage msg = m_deserializer->GetMessage(time, reject_message);
+            bool disconnect{false};
+            CNetMessage msg = m_deserializer->GetMessage(time, reject_message, disconnect);
+
+            if (disconnect) {
+                // v2 p2p incorrect MAC tag. Disconnect from peer.
+                return false;
+            }
+
             if (reject_message) {
                 // Message deserialization failed.  Drop the message but don't disconnect the peer.
                 // store the size of the corrupt message
@@ -739,10 +751,12 @@ const uint256& V1TransportDeserializer::GetMessageHash() const
     return data_hash;
 }
 
-CNetMessage V1TransportDeserializer::GetMessage(const std::chrono::microseconds time, bool& reject_message)
+CNetMessage V1TransportDeserializer::GetMessage(const std::chrono::microseconds time, bool& reject_message, bool& disconnect)
 {
     // Initialize out parameter
     reject_message = false;
+    disconnect = false;
+
     // decompose a single CNetMessage from the TransportDeserializer
     CNetMessage msg(std::move(vRecv));
 
@@ -764,6 +778,7 @@ CNetMessage V1TransportDeserializer::GetMessage(const std::chrono::microseconds 
                  HexStr(Span{hash}.first(CMessageHeader::CHECKSUM_SIZE)),
                  HexStr(hdr.pchChecksum),
                  m_node_id);
+        // TODO: Should we disconnect the v1 peer in this case?
         reject_message = true;
     } else if (!hdr.IsCommandValid()) {
         LogPrint(BCLog::NET, "Header error: Invalid message type (%s, %u bytes), peer=%d\n",
@@ -776,7 +791,160 @@ CNetMessage V1TransportDeserializer::GetMessage(const std::chrono::microseconds 
     return msg;
 }
 
-void V1TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) {
+int V2TransportDeserializer::readHeader(Span<const uint8_t> msg_bytes)
+{
+    // copy data to temporary parsing buffer
+    const unsigned int remaining = CHACHA20_POLY1305_AEAD_AAD_LEN - m_hdr_pos;
+    const unsigned int copy_bytes = std::min<unsigned int>(remaining, msg_bytes.size());
+
+    memcpy(&vRecv[m_hdr_pos], msg_bytes.data(), copy_bytes);
+    m_hdr_pos += copy_bytes;
+
+    // if AAD incomplete, exit
+    if (m_hdr_pos < CHACHA20_POLY1305_AEAD_AAD_LEN) {
+        return copy_bytes;
+    }
+
+    // we got the AAD bytes at this point (3 bytes encrypted packet length)
+    m_message_size = m_aead->DecryptLength((const uint8_t*)vRecv.data());
+
+    // reject messages larger than MAX_SIZE
+    if (m_message_size > V2_MAX_PAYLOAD_LENGTH) {
+        return -1;
+    }
+
+    // switch state to reading message data
+    m_in_data = true;
+
+    return copy_bytes;
+}
+int V2TransportDeserializer::readData(Span<const uint8_t> msg_bytes)
+{
+    // Read the message data (command, payload & MAC)
+    const unsigned int remaining = m_message_size + CHACHA20_POLY1305_AEAD_TAG_LEN - m_data_pos;
+    const unsigned int copy_bytes = std::min<unsigned int>(remaining, msg_bytes.size());
+
+    // extend buffer, respect previous copied AAD part
+    if (vRecv.size() < CHACHA20_POLY1305_AEAD_AAD_LEN + m_data_pos + copy_bytes) {
+        // Allocate up to 256 KiB ahead, but never more than the total message size (incl. AAD & TAG).
+        vRecv.resize(CHACHA20_POLY1305_AEAD_AAD_LEN + std::min(m_message_size, m_data_pos + copy_bytes + 256 * 1024) + CHACHA20_POLY1305_AEAD_TAG_LEN);
+    }
+
+    memcpy(&vRecv[CHACHA20_POLY1305_AEAD_AAD_LEN + m_data_pos], msg_bytes.data(), copy_bytes);
+    m_data_pos += copy_bytes;
+
+    return copy_bytes;
+}
+
+
+CNetMessage V2TransportDeserializer::GetMessage(const std::chrono::microseconds time, bool& reject_message, bool& disconnect)
+{
+    // Initialize out parameters
+    reject_message = false;
+    disconnect = false;
+
+    // In v2, vRecv contains the encrypted length (AAD), encrypted payload plus the MAC tag
+    // (3 bytes AAD + 1-13 bytes serialized message command + ? bytes message payload + 16 byte MAC tag)
+    assert(Complete());
+
+    std::string command_name;
+
+    // defensive decryption (MAC check, decryption, command deserialization)
+    // we'll always return a CNetMessage (even if decryption fails)
+    if (m_aead->Crypt((unsigned char*)vRecv.data(), vRecv.size(), (const uint8_t*)vRecv.data(), vRecv.size(), false)) {
+        // MAC check was successful
+        // We can remove packet length (stored in m_message_size) and MAC tag (verified)
+        assert(vRecv.size() >= CHACHA20_POLY1305_AEAD_AAD_LEN + CHACHA20_POLY1305_AEAD_TAG_LEN);
+
+        // CDataStream::erase at the begin will just increase the read pos
+        vRecv.erase(vRecv.begin(), vRecv.begin() + CHACHA20_POLY1305_AEAD_AAD_LEN);
+        vRecv.erase(vRecv.end() - CHACHA20_POLY1305_AEAD_TAG_LEN, vRecv.end());
+
+        uint8_t size_or_shortid = 0;
+        try {
+            vRecv >> size_or_shortid;
+        } catch (const std::ios_base::failure&) {
+            LogPrint(BCLog::NET, "Invalid message type, peer=%d\n", m_node_id);
+            reject_message = true;
+        }
+
+        if (size_or_shortid > 0 && size_or_shortid <= NET_P2P_V2_CMD_MAX_CHARS_SIZE && vRecv.size() >= size_or_shortid) {
+            // first byte is a number between 1 and 12. Must be a string command.
+            // use direct read since we already read the varlen size
+            command_name.resize(size_or_shortid);
+            vRecv.read(&command_name[0], size_or_shortid);
+        } else if (!GetMessageTypeFromShortID(size_or_shortid, command_name)) {
+            // unknown-short-id results in a valid but unknown message (will be skipped)
+            command_name = "unknown-" + ToString(size_or_shortid);
+        }
+    } else {
+        // Invalid mac tag
+        LogPrint(BCLog::NET, "Invalid v2 mac tag, peer=%d\n", m_node_id);
+        disconnect = true;
+        reject_message = true;
+    }
+
+    // decompose a single CNetMessage from the TransportDeserializer
+    CNetMessage msg(std::move(vRecv));
+    msg.m_command = command_name;
+
+    msg.m_message_size = msg.m_recv.size();
+    msg.m_raw_message_size = CHACHA20_POLY1305_AEAD_AAD_LEN + m_message_size + CHACHA20_POLY1305_AEAD_TAG_LEN; // raw wire size
+    msg.m_time = time;
+
+    Reset();
+    return msg;
+}
+
+bool V2TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header)
+{
+    size_t serialized_command_size = 1; // short-IDs are 1 byte
+    std::optional<uint8_t> cmd_short_id = GetShortIDFromMessageType(msg.m_type);
+    if (!cmd_short_id) {
+        // message command without an assigned short-ID
+        assert(msg.m_type.size() <= NET_P2P_V2_CMD_MAX_CHARS_SIZE);
+        // encode as varstr, max 12 chars
+        serialized_command_size = ::GetSerializeSize(msg.m_type, PROTOCOL_VERSION);
+    }
+    // prepare the packet length that will later be encrypted and part of the MAC (AAD)
+    // the packet length excludes the 16 byte MAC tag
+    uint32_t packet_length = serialized_command_size + msg.data.size();
+
+    // prepare the packet length & message command and reserve 4 bytes (3bytes AAD + 1byte short-ID)
+    std::vector<unsigned char> serialized_header(CHACHA20_POLY1305_AEAD_AAD_LEN + 1);
+    // LE serialize the 24bits length
+    // we do "manually" encode this since there is no helper for 24bit serialization
+    packet_length = htole32(packet_length);
+    memcpy(serialized_header.data(), &packet_length, 3);
+
+    // append the short-ID or (eventually) the varstr of the command
+    CVectorWriter vector_writer(SER_NETWORK, INIT_PROTO_VERSION, serialized_header, 3);
+    if (cmd_short_id) {
+        // append the single byte short ID...
+        vector_writer << cmd_short_id.value();
+    } else {
+        // or the ASCII command string
+        vector_writer << msg.m_type;
+    }
+
+    // insert header directly into the CSerializedNetMsg data buffer (insert at begin)
+    // TODO: if we refactor the ChaCha20Poly1305 crypt function to allow separate buffers for
+    //       the AAD, payload and MAC, we could avoid a insert and thus a potential reallocation
+    msg.data.insert(msg.data.begin(), serialized_header.begin(), serialized_header.end());
+
+    // resize the message buffer to make space for the MAC tag
+    msg.data.resize(msg.data.size() + CHACHA20_POLY1305_AEAD_TAG_LEN, 0);
+
+    // encrypt the payload, this should always succeed (controlled buffers, don't check the MAC during encrypting)
+    auto success = m_aead->Crypt(msg.data.data(), msg.data.size(), msg.data.data(), msg.data.size() - CHACHA20_POLY1305_AEAD_TAG_LEN, true);
+    if (!success) {
+        LogPrint(BCLog::NET, "error in v2 p2p AEAD encryption for message type: %s\n", msg.m_type);
+    }
+    return success;
+}
+
+bool V1TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header)
+{
     // create dbl-sha256 checksum
     uint256 hash = Hash(msg.data);
 
@@ -787,6 +955,7 @@ void V1TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vec
     // serialize header
     header.reserve(CMessageHeader::HEADER_SIZE);
     CVectorWriter{SER_NETWORK, INIT_PROTO_VERSION, header, 0, hdr};
+    return true;
 }
 
 size_t CConnman::SocketSendData(CNode& node) const
@@ -2994,8 +3163,9 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, SOCKET hSocketIn, const
         m_tx_relay = std::make_unique<TxRelay>();
     }
 
-    for (const std::string &msg : getAllNetMessageTypes())
-        mapRecvBytesPerMsgCmd[msg] = 0;
+    for (const auto& msg : getAllNetMessageTypes()) {
+        mapRecvBytesPerMsgCmd[msg.second] = 0;
+    }
     mapRecvBytesPerMsgCmd[NET_MESSAGE_COMMAND_OTHER] = 0;
 
     if (fLogIPs) {
@@ -3037,7 +3207,10 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
 
     // make sure we use the appropriate network transport format
     std::vector<unsigned char> serializedHeader;
-    pnode->m_serializer->prepareForTransport(msg, serializedHeader);
+    if (!pnode->m_serializer->prepareForTransport(msg, serializedHeader)) {
+        return;
+    }
+
     size_t nTotalSize = nMessageSize + serializedHeader.size();
 
     size_t nBytesSent = 0;
