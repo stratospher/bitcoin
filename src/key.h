@@ -22,6 +22,11 @@
  */
 typedef std::vector<unsigned char, secure_allocator<unsigned char> > CPrivKey;
 
+constexpr static int ECDH_SECRET_SIZE = 32;
+
+// Used to represent a ECDH secret (ECDH_SECRET_SIZE bytes)
+using ECDHSecret = std::vector<uint8_t, secure_allocator<uint8_t>>;
+
 /** An encapsulated private key. */
 class CKey
 {
@@ -156,6 +161,9 @@ public:
 
     //! Load private key and check that public key matches.
     bool Load(const CPrivKey& privkey, const CPubKey& vchPubKey, bool fSkipCheck);
+
+    // Returns false if an invalid public key is provided
+    bool ComputeECDHSecret(const CPubKey& pubkey, ECDHSecret& secret) const;
 };
 
 struct CExtKey {

@@ -334,3 +334,34 @@ FUZZ_TARGET_INIT(ellsq, initialize_key)
 
     assert(pubkey == decoded_pubkey);
 }
+
+FUZZ_TARGET_INIT(ecdh, initialize_key)
+{
+    FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
+    auto rnd32 = fuzzed_data_provider.ConsumeBytes<uint8_t>(32);
+    rnd32.resize(32);
+    CKey k1;
+    k1.Set(rnd32.begin(), rnd32.end(), true);
+
+    if (!k1.IsValid()) {
+        return;
+    }
+
+    rnd32 = fuzzed_data_provider.ConsumeBytes<uint8_t>(32);
+    rnd32.resize(32);
+    CKey k2;
+    k2.Set(rnd32.begin(), rnd32.end(), true);
+
+    if (!k2.IsValid()) {
+        return;
+    }
+
+    CPubKey k1_pubkey = k1.GetPubKey();
+    CPubKey k2_pubkey = k2.GetPubKey();
+    ECDHSecret ecdh_secret_1, ecdh_secret_2;
+    assert(k1.ComputeECDHSecret(k2_pubkey, ecdh_secret_1));
+    assert(k2.ComputeECDHSecret(k1_pubkey, ecdh_secret_2));
+    assert(ecdh_secret_1.size() == ECDH_SECRET_SIZE);
+    assert(ecdh_secret_2.size() == ECDH_SECRET_SIZE);
+    assert(memcmp(ecdh_secret_1.data(), ecdh_secret_2.data(), ECDH_SECRET_SIZE) == 0);
+}

@@ -23,6 +23,7 @@
 #include <random.h>
 #include <span.h>
 #include <streams.h>
+#include <support/allocators/secure.h>
 #include <sync.h>
 #include <threadinterrupt.h>
 #include <uint256.h>
@@ -458,6 +459,21 @@ public:
     // prepare for next message
     bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) override;
 };
+
+constexpr size_t BIP324_KEY_LEN = 32;
+
+using BIP324Key = std::vector<uint8_t, secure_allocator<uint8_t>>;
+
+struct BIP324Keys {
+    BIP324Key initiator_F;
+    BIP324Key initiator_V;
+    BIP324Key responder_F;
+    BIP324Key responder_V;
+    BIP324Key session_id;
+};
+
+// Returns false if the ecdh_secret is malformed.
+bool DeriveBIP324Keys(ECDHSecret&& ecdh_secret, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, BIP324Keys& derived_keys);
 
 /** Information about a peer */
 class CNode
