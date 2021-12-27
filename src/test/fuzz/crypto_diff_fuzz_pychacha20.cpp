@@ -21,11 +21,9 @@ static void send_msg(int write_fd, std::string msg)
     unsigned iBuf = 0;
     while (iBuf < 4)
     {
-        std::cout<<"::write(write_fd="<<write_fd<<", msgSizeBuf + iBuf="<<iBuf<<"sizeof(msgSizeBuf) - iBuf="<<sizeof(msgSizeBuf) - iBuf<<")\n";
         ssize_t rc = ::write(write_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf);
         if ( rc < 0 )
         {
-            std::cout << "rc ="<<rc<<std::endl;
             std::cout << "Error writing message size" << std::endl;
             ::exit(1);
         }
@@ -39,23 +37,28 @@ static void send_msg(int write_fd, std::string msg)
             iBuf += rc;
         }
     }
+
+    iBuf = 0;
+    const char *msgBuf = msg.c_str();
+    while (iBuf < msgSize)
+    {
+        ssize_t rc = ::write(write_fd, msgBuf + iBuf, msgSize - iBuf);
+        if ( rc < 0 )
+        {
+            std::cout << "Error writing message" << std::endl;
+            ::exit(1);
+        }
+        else if ( rc == 0 )
+        {
+            std::cout << "rc == 0, what does that mean?" << std::endl;
+            ::exit(1);
+        }
+        else
+        {
+            iBuf += rc;
+        }
+    }
 }
-//
-//std::vector<unsigned char> intToBytes(int value)
-//{
-//    std::string str="";
-//    std::vector<unsigned char> result;
-//    result.push_back(value >> 24);
-//    result.push_back(value >> 16);
-//    result.push_back(value >>  8);
-//    result.push_back(value      );
-//
-//    for(size_t i=0; i<4; i++){
-//        str+=result[i];
-//    }
-//
-//    return result;
-//}
 
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 {
@@ -69,85 +72,83 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
 
-    pid_t pid = fork();
-    if (pid == 0){
-        //child process
-//        ::close(pipe_py_to_cpp[0]);
-//        ::close(pipe_cpp_to_py[1]);
-        std::ostringstream oss;
-        oss << "export PY_READ_FD=" << pipe_cpp_to_py[1] << " && " //This we need
-            << "export PY_WRITE_FD=" << pipe_py_to_cpp[0] << " && "
-            << "export PYTHONUNBUFFERED=true && " // Force stdin, stdout and stderr to be totally unbuffered.
-            << "python3 src/test/fuzz/script.py";
-        ::system(oss.str().c_str());
-        std::cout<<"cpp: sent os to python="<<oss.str()<<"*\n";
-//        ::close(pipe_py_to_cpp[1]);
-//        ::close(pipe_cpp_to_py[0]);
-
-    }else if (pid < 0){
-        std::cout << "Fork failed." << std::endl;
-        ::exit(1); //TODO
-    }else{
-
-    //Do everything here -- that is everything you'd possibly want to send python
-
-    /* *************************** Fancy separator *************************** */
-
-//        if (fuzzed_data_provider.ConsumeBool()) {
-    const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(16, 32));
+    const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, 32);//TODO - support 16 to 32 bytes
     chacha20 = ChaCha20{key.data(), key.size()};
-    std::cout<<"cpp: 1. done init chacha20 with key.size()"<<key.size()<<"\n";
     // child: send to our python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0)
-    std::ostringstream os;
+    std::ostringstream os1;
+    os1<<"init";
+    send_msg(pipe_cpp_to_py[1], os1.str());
+    std::ostringstream os2;
     std::string key_str="";
     for(size_t i=0; i<key.size(); i++){
         key_str+=key[i];
     }
-    os<<4<<"init"<<key.size()<<key_str;
-    std::cout<<"cpp: sent os to python="<<os.str()<<"*\n";
-    std::cout<<"cpp: fd is"<<pipe_cpp_to_py[1]<<"*\n";
-    send_msg(pipe_cpp_to_py[1], os.str()); //TODO write from cpp to python
-    std::cout<<"cpp: sent over*\n";
+    os2<<key_str;
+    send_msg(pipe_cpp_to_py[1], os2.str());
 
-//        }
+    std::ostringstream oss;
+    oss << "export PY_READ_FD=" << pipe_cpp_to_py[0] << " && " //This we need
+    << "export PY_WRITE_FD=" << pipe_py_to_cpp[1] << " && "
+    << "export PYTHONUNBUFFERED=true && " // Force stdin, stdout and stderr to be totally unbuffered.
+    << "python3 src/test/fuzz/script.py";
+    ::system(oss.str().c_str());
 
     LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 3000) {
         CallOneOf(
                 fuzzed_data_provider,
                 [&] {
+                    std::cout<<"cpp: inside stream\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
                     chacha20.Keystream(output.data(), output.size());
-                    std::cout<<"cpp: 2. done keystream computation chacha20 with output.size()"<<output.size()<<"\n";
+//                    std::cout<<"cpp: 2. finished keystream computation chacha20 with output.size()"<<output.size()<<"\n";
+
+                    // child: send to our python script [6]["stream"][size][cpp_key_stream]
+
+                    std::ostringstream os1;
+                    os1<<"stream";
+                    send_msg(pipe_cpp_to_py[1], os1.str());
+
+                    std::ostringstream os2;
                     std::string output_as_string(output.begin(), output.end());
-                    // child: send to our python script [6][stream][size][string] # TODO: Should the Python API return so and so output.data?
-                    std::ostringstream os;
-                    os << 6<<"stream"<<integralInRange<<output_as_string;
-                    send_msg(pipe_cpp_to_py[1], os.str()); //TODO write from cpp to python
+                    os2<<output_as_string;
+                    send_msg(pipe_cpp_to_py[1], os2.str());
                 },
                 [&] {
+                    std::cout<<"cpp: inside crypt\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
                     const std::vector <uint8_t> input = ConsumeFixedLengthByteVector(fuzzed_data_provider, output.size());
                     chacha20.Crypt(input.data(), output.data(), input.size());
-                    std::cout<<"cpp: 3. done Crypt computation chacha20 with output.size()"<<input.size()<<"\n";
-                    std::string output_as_string(output.begin(), output.end());
-                    // child: send to put python script [5][crypt][size][msg] # TODO: Should the Python API return so and so output.data?
-                    std::ostringstream os;
-                    std::string msg = "";
-                    for (size_t i = 0; i < input.size(); i++) {
-                        msg += input[i];
-                    }
-                    os << 5<<"crypt" << integralInRange << msg << output_as_string;
-                    send_msg(pipe_cpp_to_py[1], os.str()); //TODO write from cpp to python
+//                    std::cout<<"cpp: 3. done Crypt computation chacha20 with output.size()"<<input.size()<<"\n";
+
+                    // child: send to put python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
+                    std::ostringstream os1;
+                    os1<<"crypt";
+                    send_msg(pipe_cpp_to_py[1], os1.str());
+
+                    std::ostringstream os2;
+                    std::string plaintext(input.begin(), input.end());
+                    os2<<plaintext;
+                    send_msg(pipe_cpp_to_py[1], os2.str());
+
+                    std::ostringstream os3;
+                    std::string ciphertext(output.begin(), output.end());
+                    os3<<ciphertext;
+                    send_msg(pipe_cpp_to_py[1], os3.str());
+
+                    std::ostringstream os4;
+                    os4 << "python3 -c 'import src/test/fuzz/script; script.main()'";
+                    ::system(os4.str().c_str());
+                    std::cout<<"cpp: crypt over\n";
                 });
     }
 
     /* *************************** End fancy separator *************************** */
-    }
+    std::ostringstream osss;
+    oss<<"exit";
+    send_msg(pipe_cpp_to_py[1], osss.str());
     //TODO: wait??
-    int returnStatus;
-    waitpid(pid, &returnStatus, 0);
     // child: send to put python script [4][exit] # i think it's needed to open a new pipe.
     ::close(pipe_py_to_cpp[0]);
     ::close(pipe_py_to_cpp[1]);
