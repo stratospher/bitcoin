@@ -11,6 +11,42 @@
 #include <string>
 #include <vector>
 
+#include<sys/socket.h> //TODO: Beautify
+#include<stdio.h>
+#include<string.h>
+#include<netdb.h>
+#include<stdlib.h>
+
+/* return true if val is set, false for EOF */
+static bool read_uint32(int read_fd, uint32_t &val)
+{
+    unsigned char msgSizeBuf[4];
+    unsigned iBuf = 0;
+
+    while (iBuf < sizeof(msgSizeBuf))
+    {
+        ssize_t rc = ::read(read_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf); //TODO: Should we use k=recv(temp_sock_desc,buf,100,0);?
+
+        if (rc == 0)
+        {
+            return false;
+        }
+        else if (rc < 0 )
+        {
+            std::cout << __func__ << "@" << __LINE__ << ":::Read ERROR" << std::endl;
+            exit(1);
+        }
+        else
+        {
+            iBuf += rc;
+        }
+    }
+
+    val = *(static_cast<uint32_t *>(static_cast<void *>(&msgSizeBuf[0])));
+
+    return true;
+}
+
 static void send_msg(int write_fd, std::string msg)
 {
     uint32_t msgSize = msg.size();
@@ -21,7 +57,8 @@ static void send_msg(int write_fd, std::string msg)
     unsigned iBuf = 0;
     while (iBuf < 4)
     {
-        ssize_t rc = ::write(write_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf);
+        ssize_t rc = ::write(write_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf); //TODO: Should I make this send??
+
         if ( rc < 0 )
         {
             std::cout << "Error writing message size" << std::endl;
@@ -62,36 +99,80 @@ static void send_msg(int write_fd, std::string msg)
 
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 {
-    int pipe_cpp_to_py[2];
-    int pipe_py_to_cpp[2];
-    if (::pipe(pipe_cpp_to_py) || ::pipe(pipe_py_to_cpp)) {
-        std::cout << "Couldn't open pipes" << std::endl;
-        ::exit(1);
+    /* ************* Fancy initialisation of sockets ********************  */
+    printf("0");
+    int k;
+    socklen_t len; //socklen_t addr_size;
+    int sock_desc,temp_sock_desc;
+    struct sockaddr_in server,client; // struct sockaddr_in server_addr, client_addr;
+    memset(&server,0,sizeof(server));
+    memset(&client,0,sizeof(client));
+    printf("1");
+    sock_desc=socket(AF_INET,SOCK_STREAM,0); //server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(sock_desc==-1)
+    {
+        printf("Error in socket creation");
+        exit(1);
     }
+    server.sin_family=AF_INET;
+    server.sin_addr.s_addr=inet_addr("127.0.0.1");
+    server.sin_port=htons(4454);
+
+    int optval = 1;
+    setsockopt(sock_desc, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); //TODO: What is SOL_SOCKET
+
+    k=bind(sock_desc,(struct sockaddr*)&server,sizeof(server));
+    printf("2");
+    if(k==-1){
+        printf("Error in binding");
+        exit(1);
+    }
+    k=listen(sock_desc,20);
+    printf("3");
+    if(k==-1)
+    {
+        printf("Error in listening");
+        exit(1);
+    }
+    len=sizeof(client);//VERY IMPORTANT
+
+    temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);//VERY //IMPORTANT
+    printf("4");
+    if(temp_sock_desc==-1)
+    {
+        printf("Error in temporary socket creation");
+        exit(1);
+    }
+    /* ************* End the Fancy initialisation of sockets ********************  */
+    printf("End the Fancy initialisation");
 
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
 
     const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, 32);//TODO - support 16 to 32 bytes
     chacha20 = ChaCha20{key.data(), key.size()};
-    // child: send to our python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0)
+    std::cout<<"cpp: inside init\n";
+    // child: send to our python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0). NOTE: 2 Sends. Therefore, 2 Receives @ python
     std::ostringstream os1;
     os1<<"init";
-    send_msg(pipe_cpp_to_py[1], os1.str());
+    send_msg(temp_sock_desc, os1.str()); //TODO: Is ostringstream ok here?
     std::ostringstream os2;
     std::string key_str="";
     for(size_t i=0; i<key.size(); i++){
         key_str+=key[i];
     }
     os2<<key_str;
-    send_msg(pipe_cpp_to_py[1], os2.str());
+    send_msg(temp_sock_desc, os2.str());
 
-    std::ostringstream oss;
-    oss << "export PY_READ_FD=" << pipe_cpp_to_py[0] << " && " //This we need
-    << "export PY_WRITE_FD=" << pipe_py_to_cpp[1] << " && "
-    << "export PYTHONUNBUFFERED=true && " // Force stdin, stdout and stderr to be totally unbuffered.
-    << "python3 src/test/fuzz/script.py";
-    ::system(oss.str().c_str());
+    uint32_t pyNumber;
+    if (!read_uint32(temp_sock_desc, pyNumber))
+    {
+        // EOF waiting for a message, script ended
+        std::cout << "EOF waiting for message, script ended" << std::endl;
+        return;
+    }
+    assert(pyNumber == 1); //TODO: Make python return response 1 if everything match. Needed??
+    std::cout<<"cpp: init over\n";
 
     LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 3000) {
         CallOneOf(
@@ -107,12 +188,22 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 
                     std::ostringstream os1;
                     os1<<"stream";
-                    send_msg(pipe_cpp_to_py[1], os1.str());
+                    send_msg(temp_sock_desc, os1.str());
 
                     std::ostringstream os2;
                     std::string output_as_string(output.begin(), output.end());
                     os2<<output_as_string;
-                    send_msg(pipe_cpp_to_py[1], os2.str());
+                    send_msg(temp_sock_desc, os2.str());
+
+                    uint32_t pyNumber; //TODO: If you dont remove, make it a fxn please
+                    if (!read_uint32(temp_sock_desc, pyNumber))
+                    {
+                        // EOF waiting for a message, script ended
+                        std::cout << "EOF waiting for message, script ended" << std::endl;
+                        return;
+                    }
+                    assert(pyNumber == 1); //TODO: Make python return response 1 if everything match. Needed??
+                    std::cout<<"cpp: stream over\n";
                 },
                 [&] {
                     std::cout<<"cpp: inside crypt\n";
@@ -125,33 +216,35 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                     // child: send to put python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
                     std::ostringstream os1;
                     os1<<"crypt";
-                    send_msg(pipe_cpp_to_py[1], os1.str());
+                    send_msg(temp_sock_desc, os1.str());
 
                     std::ostringstream os2;
                     std::string plaintext(input.begin(), input.end());
                     os2<<plaintext;
-                    send_msg(pipe_cpp_to_py[1], os2.str());
+                    send_msg(temp_sock_desc, os2.str());
 
                     std::ostringstream os3;
                     std::string ciphertext(output.begin(), output.end());
                     os3<<ciphertext;
-                    send_msg(pipe_cpp_to_py[1], os3.str());
+                    send_msg(temp_sock_desc, os3.str());
 
-                    std::ostringstream os4;
-                    os4 << "python3 -c 'import src/test/fuzz/script; script.main()'";
-                    ::system(os4.str().c_str());
+                    uint32_t pyNumber;
+                    if (!read_uint32(temp_sock_desc, pyNumber))
+                    {
+                        // EOF waiting for a message, script ended
+                        std::cout << "EOF waiting for message, script ended" << std::endl;
+                        return;
+                    }
+                    assert(pyNumber == 1); //TODO: Make python return response 1 if everything match. Needed??
+
                     std::cout<<"cpp: crypt over\n";
                 });
     }
 
-    /* *************************** End fancy separator *************************** */
     std::ostringstream osss;
-    oss<<"exit";
-    send_msg(pipe_cpp_to_py[1], osss.str());
-    //TODO: wait??
-    // child: send to put python script [4][exit] # i think it's needed to open a new pipe.
-    ::close(pipe_py_to_cpp[0]);
-    ::close(pipe_py_to_cpp[1]);
-    ::close(pipe_cpp_to_py[0]);
-    ::close(pipe_cpp_to_py[1]);
+    osss<<"exit";
+    send_msg(temp_sock_desc, osss.str());
+
+    close(temp_sock_desc);
+    std::cout<<"cpp: says bye!\n";
 }
