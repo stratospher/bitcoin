@@ -99,63 +99,62 @@ static void send_msg(int write_fd, std::string msg)
 
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 {
-    /* ************* Fancy initialisation of sockets ********************  */
-    printf("0");
+    /* ************* initialisation of sockets ********************  */
+    /*
+     * This behaves like the server. TCP Server performs:
+     * create() ->  bind() ->  listen() -> accept()
+     */
     int k;
-    socklen_t len; //socklen_t addr_size;
+    socklen_t len;
     int sock_desc,temp_sock_desc;
-    struct sockaddr_in server,client; // struct sockaddr_in server_addr, client_addr;
+    struct sockaddr_in server,client;
     memset(&server,0,sizeof(server));
     memset(&client,0,sizeof(client));
-    printf("1");
-    sock_desc=socket(AF_INET,SOCK_STREAM,0); //server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    // socket create and verification
+    sock_desc=socket(AF_INET,SOCK_STREAM,0);
     if(sock_desc==-1)
     {
         printf("Error in socket creation");
         exit(1);
     }
+    // assign IP, PORT
     server.sin_family=AF_INET;
     server.sin_addr.s_addr=inet_addr("127.0.0.1");
     server.sin_port=htons(4454);
-
     int optval = 1;
-    setsockopt(sock_desc, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); //TODO: What is SOL_SOCKET
-
+    setsockopt(sock_desc, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); //TODO: What happens when we remove
+    // Binding newly created socket to given IP and verification
     k=bind(sock_desc,(struct sockaddr*)&server,sizeof(server));
-    printf("2");
     if(k==-1){
         printf("Error in binding");
         exit(1);
     }
-    k=listen(sock_desc,20);
-    printf("3");
+    // Now server is ready to listen and verification
+    k=listen(sock_desc,20); //todo: do we change?
     if(k==-1)
     {
         printf("Error in listening");
         exit(1);
     }
-    len=sizeof(client);//VERY IMPORTANT
-
-    temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);//VERY //IMPORTANT
-    printf("4");
+    len=sizeof(client);
+    // Accept the data packet from client and verification
+    temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);
     if(temp_sock_desc==-1)
     {
-        printf("Error in temporary socket creation");
+        printf("Error in temporary socket creation"); // All the crashes(till now) occur here
         exit(1);
     }
-    /* ************* End the Fancy initialisation of sockets ********************  */
-    printf("End the Fancy initialisation");
+    /* ************* End initialisation ********************  */
 
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
 
     const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, 32);//TODO - support 16 to 32 bytes
     chacha20 = ChaCha20{key.data(), key.size()};
-    std::cout<<"cpp: inside init\n";
-    // child: send to our python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0). NOTE: 2 Sends. Therefore, 2 Receives @ python
+    // server: send to python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0)
     std::ostringstream os1;
     os1<<"init";
-    send_msg(temp_sock_desc, os1.str()); //TODO: Is ostringstream ok here?
+    send_msg(temp_sock_desc, os1.str());
     std::ostringstream os2;
     std::string key_str="";
     for(size_t i=0; i<key.size(); i++){
@@ -163,7 +162,7 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
     }
     os2<<key_str;
     send_msg(temp_sock_desc, os2.str());
-
+    // server: check if response from client is 1 ("1" means ok and "0" means problem)
     uint32_t pyNumber;
     if (!read_uint32(temp_sock_desc, pyNumber))
     {
@@ -171,21 +170,20 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
         std::cout << "EOF waiting for message, script ended" << std::endl;
         return;
     }
-    assert(pyNumber == 1); //TODO: Make python return response 1 if everything match. Needed??
-    std::cout<<"cpp: init over\n";
+    close(temp_sock_desc);
+    assert(pyNumber == 1); //TODO: Maybe some better response message?
 
     LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 3000) {
+        std::cout<<"cpp: Me inside the LIMITED_WHILE\n";
+        temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);
         CallOneOf(
                 fuzzed_data_provider,
-                [&] {
+                [&]{
                     std::cout<<"cpp: inside stream\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
                     chacha20.Keystream(output.data(), output.size());
-//                    std::cout<<"cpp: 2. finished keystream computation chacha20 with output.size()"<<output.size()<<"\n";
-
-                    // child: send to our python script [6]["stream"][size][cpp_key_stream]
-
+                    // server: send to our python script [6]["stream"][size][cpp_key_stream]
                     std::ostringstream os1;
                     os1<<"stream";
                     send_msg(temp_sock_desc, os1.str());
@@ -195,25 +193,25 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                     os2<<output_as_string;
                     send_msg(temp_sock_desc, os2.str());
 
-                    uint32_t pyNumber; //TODO: If you dont remove, make it a fxn please
+                    uint32_t pyNumber; //TODO: If you don't remove, make it a fxn please
                     if (!read_uint32(temp_sock_desc, pyNumber))
                     {
                         // EOF waiting for a message, script ended
                         std::cout << "EOF waiting for message, script ended" << std::endl;
                         return;
                     }
-                    assert(pyNumber == 1); //TODO: Make python return response 1 if everything match. Needed??
+                    assert(pyNumber == 1);
+                    close(temp_sock_desc);
                     std::cout<<"cpp: stream over\n";
-                },
-                [&] {
+               },
+               [&]{
                     std::cout<<"cpp: inside crypt\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
                     const std::vector <uint8_t> input = ConsumeFixedLengthByteVector(fuzzed_data_provider, output.size());
                     chacha20.Crypt(input.data(), output.data(), input.size());
-//                    std::cout<<"cpp: 3. done Crypt computation chacha20 with output.size()"<<input.size()<<"\n";
 
-                    // child: send to put python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
+                    // server: send to our python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
                     std::ostringstream os1;
                     os1<<"crypt";
                     send_msg(temp_sock_desc, os1.str());
@@ -235,16 +233,26 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                         std::cout << "EOF waiting for message, script ended" << std::endl;
                         return;
                     }
-                    assert(pyNumber == 1); //TODO: Make python return response 1 if everything match. Needed??
-
+                    assert(pyNumber == 1);
+                    close(temp_sock_desc);
                     std::cout<<"cpp: crypt over\n";
                 });
     }
+
+    temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);
 
     std::ostringstream osss;
     osss<<"exit";
     send_msg(temp_sock_desc, osss.str());
 
+    if (!read_uint32(temp_sock_desc, pyNumber))
+    {
+        // EOF waiting for a message, script ended
+        std::cout << "EOF waiting for message, script ended" << std::endl;
+        return;
+    }
+
     close(temp_sock_desc);
+    close(sock_desc);
     std::cout<<"cpp: says bye!\n";
 }
