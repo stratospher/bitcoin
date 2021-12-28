@@ -11,63 +11,36 @@
 #include <string>
 #include <vector>
 
-#include<sys/socket.h> //TODO: Beautify
-#include<stdio.h>
-#include<string.h>
-#include<netdb.h>
-#include<stdlib.h>
-
-/* return true if val is set, false for EOF */
-static bool read_uint32(int read_fd, uint32_t &val)
-{
-    unsigned char msgSizeBuf[4];
-    unsigned iBuf = 0;
-
-    while (iBuf < sizeof(msgSizeBuf))
-    {
-        ssize_t rc = ::read(read_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf); //TODO: Should we use k=recv(temp_sock_desc,buf,100,0);?
-
-        if (rc == 0)
-        {
-            return false;
-        }
-        else if (rc < 0 )
-        {
-            std::cout << __func__ << "@" << __LINE__ << ":::Read ERROR" << std::endl;
-            exit(1);
-        }
-        else
-        {
-            iBuf += rc;
-        }
-    }
-
-    val = *(static_cast<uint32_t *>(static_cast<void *>(&msgSizeBuf[0])));
-
-    return true;
-}
+#include <stdio.h> //TODO: Tidy this
+#include <netdb.h>
+#include <netinet/in.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#define PORT 8080
+#define SA struct sockaddr
 
 static void send_msg(int write_fd, std::string msg)
 {
     uint32_t msgSize = msg.size();
     unsigned char msgSizeBuf[4];
 
-    ::memcpy(msgSizeBuf, &msgSize, sizeof(msgSize));
+    memcpy(msgSizeBuf, &msgSize, sizeof(msgSize));
 
     unsigned iBuf = 0;
     while (iBuf < 4)
     {
-        ssize_t rc = ::write(write_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf); //TODO: Should I make this send??
-
+        ssize_t rc = ::write(write_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf);
         if ( rc < 0 )
         {
+//            printf("socket() failed: %s\n", strerror(errno)); Note: Nice way of finding failure cause. TODO: Remove later
             std::cout << "Error writing message size" << std::endl;
-            ::exit(1);
+            exit(1);
         }
         else if ( rc == 0 )
         {
             std::cout << "rc == 0, what does that mean?" << std::endl;
-            ::exit(1);
+            exit(1);
         }
         else
         {
@@ -83,18 +56,45 @@ static void send_msg(int write_fd, std::string msg)
         if ( rc < 0 )
         {
             std::cout << "Error writing message" << std::endl;
-            ::exit(1);
+            exit(1);
         }
         else if ( rc == 0 )
         {
             std::cout << "rc == 0, what does that mean?" << std::endl;
-            ::exit(1);
+            exit(1);
         }
         else
         {
             iBuf += rc;
         }
     }
+}
+
+//TODO: use fancy optional maybe
+void send_to_python(int sockfd, std::string str, std::vector<uint8_t> v1={}, std::vector<uint8_t> v2={}){
+
+    std::ostringstream os1;
+    os1<<str;
+    send_msg(sockfd, os1.str());
+
+    if(!v1.empty()){
+        std::ostringstream os2;
+        std::string v_as_str=std::string(v1.begin(), v1.end());
+        os2<<v_as_str; //TODO: Can we not pass the string directly. Why ostringstream?
+        send_msg(sockfd, os2.str());
+    }
+
+    //TODO: Maybe later, write this more compactly?
+    if(!v2.empty()){
+        std::ostringstream os2;
+        std::string v_as_str=std::string(v2.begin(), v2.end());
+        os2<<v_as_str;
+        send_msg(sockfd, os2.str());
+    }
+}
+
+void read_from_python(int sockfd, int &response){
+     read(sockfd, &response, sizeof(response));
 }
 
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
@@ -104,78 +104,80 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
      * This behaves like the server. TCP Server performs:
      * create() ->  bind() ->  listen() -> accept()
      */
-    int k;
+    int sockfd, connfd;
     socklen_t len;
-    int sock_desc,temp_sock_desc;
-    struct sockaddr_in server,client;
-    memset(&server,0,sizeof(server));
-    memset(&client,0,sizeof(client));
+    struct sockaddr_in servaddr, cli;
+
     // socket create and verification
-    sock_desc=socket(AF_INET,SOCK_STREAM,0);
-    if(sock_desc==-1)
-    {
-        printf("Error in socket creation");
-        exit(1);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        std::cout<<"socket creation failed...\n";
+        exit(0);
     }
+//    else
+//        printf("socket successfully created..\n");
+
+    // allows multiple sockets to be open on the same port.(No like) (maybe why this doesn't work?)
+    /*
+     * You can use setsockopt() to set the SO_REUSEADDR socket option, which explicitly allows a process to bind to a port which remains in TIME_WAIT
+     * (it still only allows a single process to be bound to that port). This is the both the simplest and the most effective option for reducing the
+     * "address already in use" error. https://hea-www.harvard.edu/~fine/Tech/addrinuse.html
+     */
+    int enable = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0){
+        std::cout<<"setsockopt(SO_REUSEADDR) failed\n";
+        exit(0);
+    }
+    bzero(&servaddr, sizeof(servaddr));
+
     // assign IP, PORT
-    server.sin_family=AF_INET;
-    server.sin_addr.s_addr=inet_addr("127.0.0.1");
-    server.sin_port=htons(4454);
-    int optval = 1;
-    setsockopt(sock_desc, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); //TODO: What happens when we remove
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(PORT);
+
     // Binding newly created socket to given IP and verification
-    k=bind(sock_desc,(struct sockaddr*)&server,sizeof(server));
-    if(k==-1){
-        printf("Error in binding");
-        exit(1);
+    if ((bind(sockfd, (SA*)&servaddr, sizeof(servaddr))) != 0) {
+        std::cout<<"socket bind failed...\n";
+        exit(0);
     }
+//    else
+//        std::cout<<"socket successfully binded..\n";
+
     // Now server is ready to listen and verification
-    k=listen(sock_desc,20); //todo: do we change?
-    if(k==-1)
-    {
-        printf("Error in listening");
-        exit(1);
+    if ((listen(sockfd, 5)) != 0) {
+        std::cout<<"listen failed...\n";
+        exit(0);
     }
-    len=sizeof(client);
+//    else
+//        std::cout<<"server listening..\n";
+    len = sizeof(cli);
+
     // Accept the data packet from client and verification
-    temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);
-    if(temp_sock_desc==-1)
-    {
-        printf("Error in temporary socket creation"); // All the crashes(till now) occur here
-        exit(1);
+    connfd = accept(sockfd, (SA*)&cli, &len);
+    if (connfd < 0) {
+        std::cout<<"server accept failed...\n"; //This will happen at some point of time. Need to fix.
+        exit(0);
     }
+//    else
+//        std::cout<<"server accept the client...\n";
     /* ************* End initialisation ********************  */
 
+    /* ************* Fuzzing Phase *************************  */
+    std::cout<<"cpp: fuzzing phase says hi!\n";
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
 
     const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, 32);//TODO - support 16 to 32 bytes
     chacha20 = ChaCha20{key.data(), key.size()};
     // server: send to python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0)
-    std::ostringstream os1;
-    os1<<"init";
-    send_msg(temp_sock_desc, os1.str());
-    std::ostringstream os2;
-    std::string key_str="";
-    for(size_t i=0; i<key.size(); i++){
-        key_str+=key[i];
-    }
-    os2<<key_str;
-    send_msg(temp_sock_desc, os2.str());
+    send_to_python(connfd, "init", key);
     // server: check if response from client is 1 ("1" means ok and "0" means problem)
-    uint32_t pyNumber;
-    if (!read_uint32(temp_sock_desc, pyNumber))
-    {
-        // EOF waiting for a message, script ended
-        std::cout << "EOF waiting for message, script ended" << std::endl;
-        return;
-    }
-    close(temp_sock_desc);
-    assert(pyNumber == 1); //TODO: Maybe some better response message?
+    int response;
+    read_from_python(connfd, response);
+    assert(response == 1); //TODO: Maybe some better response message?
 
     LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 3000) {
-        std::cout<<"cpp: Me inside the LIMITED_WHILE\n";
-        temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);
+        std::cout<<"cpp: You're inside the LIMITED_WHILE\n";
         CallOneOf(
                 fuzzed_data_provider,
                 [&]{
@@ -184,24 +186,10 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                     std::vector <uint8_t> output(integralInRange);
                     chacha20.Keystream(output.data(), output.size());
                     // server: send to our python script [6]["stream"][size][cpp_key_stream]
-                    std::ostringstream os1;
-                    os1<<"stream";
-                    send_msg(temp_sock_desc, os1.str());
-
-                    std::ostringstream os2;
-                    std::string output_as_string(output.begin(), output.end());
-                    os2<<output_as_string;
-                    send_msg(temp_sock_desc, os2.str());
-
-                    uint32_t pyNumber; //TODO: If you don't remove, make it a fxn please
-                    if (!read_uint32(temp_sock_desc, pyNumber))
-                    {
-                        // EOF waiting for a message, script ended
-                        std::cout << "EOF waiting for message, script ended" << std::endl;
-                        return;
-                    }
-                    assert(pyNumber == 1);
-                    close(temp_sock_desc);
+                    send_to_python(connfd, "stream", output);
+                    // server: check if response from client is 1 ("1" means ok and "0" means problem)
+                    read_from_python(connfd, response);
+                    assert(response == 1);
                     std::cout<<"cpp: stream over\n";
                },
                [&]{
@@ -210,49 +198,19 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                     std::vector <uint8_t> output(integralInRange);
                     const std::vector <uint8_t> input = ConsumeFixedLengthByteVector(fuzzed_data_provider, output.size());
                     chacha20.Crypt(input.data(), output.data(), input.size());
-
                     // server: send to our python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
-                    std::ostringstream os1;
-                    os1<<"crypt";
-                    send_msg(temp_sock_desc, os1.str());
-
-                    std::ostringstream os2;
-                    std::string plaintext(input.begin(), input.end());
-                    os2<<plaintext;
-                    send_msg(temp_sock_desc, os2.str());
-
-                    std::ostringstream os3;
-                    std::string ciphertext(output.begin(), output.end());
-                    os3<<ciphertext;
-                    send_msg(temp_sock_desc, os3.str());
-
-                    uint32_t pyNumber;
-                    if (!read_uint32(temp_sock_desc, pyNumber))
-                    {
-                        // EOF waiting for a message, script ended
-                        std::cout << "EOF waiting for message, script ended" << std::endl;
-                        return;
-                    }
-                    assert(pyNumber == 1);
-                    close(temp_sock_desc);
+                    send_to_python(connfd, "crypt", input, output);
+                    // server: check if response from client is 1 ("1" means ok and "0" means problem)
+                    read_from_python(connfd, response);
+                    assert(response == 1);
                     std::cout<<"cpp: crypt over\n";
                 });
     }
+    send_to_python(connfd, "exit");
+    read_from_python(connfd, response);
+    assert(response == 1);
+    std::cout<<"cpp: fuzzing phase says bye!\n";
+    /* ************* End Fuzzing Phase *************************  */
 
-    temp_sock_desc=accept(sock_desc,(struct sockaddr*)&client,&len);
-
-    std::ostringstream osss;
-    osss<<"exit";
-    send_msg(temp_sock_desc, osss.str());
-
-    if (!read_uint32(temp_sock_desc, pyNumber))
-    {
-        // EOF waiting for a message, script ended
-        std::cout << "EOF waiting for message, script ended" << std::endl;
-        return;
-    }
-
-    close(temp_sock_desc);
-    close(sock_desc);
-    std::cout<<"cpp: says bye!\n";
+    close(sockfd);
 }
