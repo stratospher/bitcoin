@@ -468,7 +468,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
         std::vector<CService> resolved;
         if (Lookup(pszDest, resolved,  default_port, fNameLookup && !HaveNameProxy(), 256) && !resolved.empty()) {
             const CService rnd{resolved[GetRand(resolved.size())]};
-            addrConnect = CAddress{MaybeFlipIPv6toCJDNS(rnd), NODE_NONE};
+            addrConnect = CAddress{MaybeFlipIPv6toCJDNS(rnd), addrConnect.nServices};
             if (!addrConnect.IsValid()) {
                 LogPrint(BCLog::NET, "Resolver returned invalid address %s for %s\n", addrConnect.ToString(), pszDest);
                 return nullptr;
@@ -2349,7 +2349,7 @@ std::vector<AddedNodeInfo> CConnman::GetAddedNodeInfo() const
 {
     std::vector<AddedNodeInfo> ret;
 
-    std::list<std::string> lAddresses(0);
+    std::list<std::pair<std::string, bool>> lAddresses(0);
     {
         LOCK(m_added_nodes_mutex);
         ret.reserve(m_added_nodes.size());
@@ -2373,9 +2373,13 @@ std::vector<AddedNodeInfo> CConnman::GetAddedNodeInfo() const
         }
     }
 
-    for (const std::string& strAddNode : lAddresses) {
+    std::string strAddNode;
+    bool use_p2p_v2;
+
+    for (auto addr : lAddresses) {
+        std::tie(strAddNode, use_p2p_v2) = addr;
         CService service(LookupNumeric(strAddNode, Params().GetDefaultPort(strAddNode)));
-        AddedNodeInfo addedNode{strAddNode, CService(), false, false};
+        AddedNodeInfo addedNode{strAddNode, CService(), false, false, use_p2p_v2};
         if (service.IsValid()) {
             // strAddNode is an IP:port
             auto it = mapConnected.find(service);
@@ -2383,6 +2387,7 @@ std::vector<AddedNodeInfo> CConnman::GetAddedNodeInfo() const
                 addedNode.resolvedAddress = service;
                 addedNode.fConnected = true;
                 addedNode.fInbound = it->second;
+                addedNode.use_p2p_v2 = use_p2p_v2;
             }
         } else {
             // strAddNode is a name
@@ -2391,6 +2396,7 @@ std::vector<AddedNodeInfo> CConnman::GetAddedNodeInfo() const
                 addedNode.resolvedAddress = it->second.second;
                 addedNode.fConnected = true;
                 addedNode.fInbound = it->second.first;
+                addedNode.use_p2p_v2 = use_p2p_v2;
             }
         }
         ret.emplace_back(std::move(addedNode));
@@ -2416,6 +2422,11 @@ void CConnman::ThreadOpenAddedConnections()
                 }
                 tried = true;
                 CAddress addr(CService(), NODE_NONE);
+
+                if (info.use_p2p_v2) {
+                    addr.nServices = ServiceFlags(addr.nServices | NODE_P2P_V2);
+                }
+
                 OpenNetworkConnection(addr, false, &grant, info.strAddedNode.c_str(), ConnectionType::MANUAL);
                 if (!interruptNet.sleep_for(std::chrono::milliseconds(500)))
                     return;
@@ -2992,22 +3003,22 @@ std::vector<CAddress> CConnman::GetAddresses(CNode& requestor, size_t max_addres
     return cache_entry.m_addrs_response_cache;
 }
 
-bool CConnman::AddNode(const std::string& strNode)
+bool CConnman::AddNode(const std::string& strNode, const bool use_p2p_v2)
 {
     LOCK(m_added_nodes_mutex);
-    for (const std::string& it : m_added_nodes) {
-        if (strNode == it) return false;
+    for (auto it : m_added_nodes) {
+        if (strNode == it.first) return false;
     }
 
-    m_added_nodes.push_back(strNode);
+    m_added_nodes.push_back(std::make_pair(strNode, use_p2p_v2));
     return true;
 }
 
 bool CConnman::RemoveAddedNode(const std::string& strNode)
 {
     LOCK(m_added_nodes_mutex);
-    for(std::vector<std::string>::iterator it = m_added_nodes.begin(); it != m_added_nodes.end(); ++it) {
-        if (strNode == *it) {
+    for(auto it = m_added_nodes.begin(); it != m_added_nodes.end(); ++it) {
+        if (strNode == it->first) {
             m_added_nodes.erase(it);
             return true;
         }
@@ -3180,7 +3191,8 @@ ServiceFlags CConnman::GetLocalServices() const
 unsigned int CConnman::GetReceiveFloodSize() const { return nReceiveFloodSize; }
 
 CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, const std::string& addrNameIn, ConnectionType conn_type_in, bool inbound_onion)
-    : nTimeConnected(GetTimeSeconds()),
+    : nServices(addrIn.nServices),
+      nTimeConnected(GetTimeSeconds()),
       addr(addrIn),
       addrBind(addrBindIn),
       m_addr_name{addrNameIn.empty() ? addr.ToStringIPPort() : addrNameIn},
