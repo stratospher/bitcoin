@@ -8,17 +8,16 @@
 #include <test/fuzz/util.h>
 
 #include <cstdint>
-#include <string>
-#include <vector>
-
-#include <stdio.h> //TODO: Tidy this
 #include <netdb.h>
 #include <netinet/in.h>
+#include <stdio.h> //TIDY
 #include <stdlib.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#define PORT 8080
-#define SA struct sockaddr
+#include <string>
+#include <sys/un.h>
+#include <vector>
+#include <unistd.h>
+
+#define SV_SOCK_PATH "/tmp/socket_test.s"
 
 static void send_msg(int write_fd, std::string msg)
 {
@@ -33,9 +32,7 @@ static void send_msg(int write_fd, std::string msg)
         ssize_t rc = ::write(write_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf);
         if ( rc < 0 )
         {
-//            printf("socket() failed: %s\n", strerror(errno)); Note: Nice way of finding failure cause. TODO: Remove later
             std::cout << "Error writing message size" << std::endl;
-            exit(1);
         }
         else if ( rc == 0 )
         {
@@ -56,7 +53,6 @@ static void send_msg(int write_fd, std::string msg)
         if ( rc < 0 )
         {
             std::cout << "Error writing message" << std::endl;
-            exit(1);
         }
         else if ( rc == 0 )
         {
@@ -86,9 +82,7 @@ static bool read_uint32(int read_fd, uint32_t &val)
         }
         else if (rc < 0 )
         {
-            printf("socket() failed: %s\n", strerror(errno));
             std::cout << __func__ << "@" << __LINE__ << ":::Read ERROR" << std::endl;
-            exit(1);
         }
         else
         {
@@ -134,31 +128,38 @@ void send_to_python(int sockfd, std::string str){
     std::ostringstream os1;
     os1<<str;
     send_msg(sockfd, os1.str());
+}
 
-//    if(!v1.empty()){
-//        std::cout<<"send v1\n";
-//        std::ostringstream os2;
-//        std::string v_as_str=std::string(v1.begin(), v1.end());
-//        os2<<v_as_str; //TODO: Can we not pass the string directly. Why ostringstream?
-//        send_msg(sockfd, os2.str());
-//    }
-//
-//    //TODO: Maybe later, write this more compactly?
-//    if(!v2.empty()){
-//        std::cout<<"send v2\n";
-//        std::ostringstream os2;
-//        std::string v_as_str=std::string(v2.begin(), v2.end());
-//        os2<<v_as_str;
-//        send_msg(sockfd, os2.str());
-//    }
+//TODO: use fancy optional maybe
+void send_to_python(int sockfd, uint32_t num){
+    unsigned char msgSizeBuf[4];
+
+    memcpy(msgSizeBuf, &num, sizeof(num));
+
+    unsigned iBuf = 0;
+    while (iBuf < 4)
+    {
+        ssize_t rc = ::write(sockfd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf);
+        if ( rc < 0 )
+        {
+            std::cout << "Error writing message size" << std::endl;
+            exit(1);
+        }
+        else if ( rc == 0 )
+        {
+            std::cout << "rc == 0, what does that mean?" << std::endl;
+            exit(1);
+        }
+        else
+        {
+            iBuf += rc;
+        }
+    }
 }
 
 void send_vector_to_python(int sockfd, std::vector <uint8_t> v){
-    std::cout<<"send v1\n";
     std::ostringstream os2;
-    std::cout<<"size of v is"<<v.size()<<"\n";
     std::string v_as_str = std::string(v.begin(), v.end()); //TODO: This NULL Being send is problem i think
-    std::cout<<"size of v_as_str is"<<v_as_str.size()<<"\n";
     os2<<v_as_str; //TODO: Can we not pass the string directly. Why ostringstream?
     send_msg(sockfd, os2.str());
 }
@@ -176,35 +177,37 @@ std::vector<unsigned char> read_from_python(int sockfd){
 
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 {
-    /* ************* initialisation of sockets ********************  */
-    int sockfd, connfd;
-    struct sockaddr_in servaddr, cli;
+    /* ----------------------- initialisation of sockets --------------------------  */
+    struct sockaddr_un addr;
 
-    // socket create and verification
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    // Create a new client socket with domain: AF_UNIX, type: SOCK_STREAM, protocol: 0
+    int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    // Make sure socket's file descriptor is legit.
     if (sockfd == -1) {
         std::cout<<"socket creation failed...\n";
-        exit(0);
+        exit(1);
     }
-    bzero(&servaddr, sizeof(servaddr));
 
-    // assign IP, PORT
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    servaddr.sin_port = htons(PORT);
+    // Construct server address, and make the connection.
+    memset(&addr, 0, sizeof(struct sockaddr_un));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SV_SOCK_PATH, sizeof(addr.sun_path) - 1);
 
-    int optval = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); //TODO: HMMMM
 
-    // connect the client socket to server socket
-    if (connect(sockfd, (SA*)&servaddr, sizeof(servaddr)) != 0) {
+    struct timeval tv;
+    tv.tv_sec = 60*5;
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
+
+    // Connects the active socket(sockfd) to the listening socket whose address is addr.
+    if (connect(sockfd, (struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1) {
         std::cout<<"connection with the server failed...\n";
-        exit(0);
+        exit(1);
     }
-    /* ************* End initialisation ********************  */
+    /* ----------------------- initialisation over -----------------------  */
 
-    /* ************* Fuzzing Phase *************************  */
-    std::cout<<"cpp: fuzzing phase says hi!\n";
+    /* ----------------------- fuzzing phase ------------------------------  */
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
 
@@ -213,62 +216,43 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
     // server: send to python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0)
     send_to_python(sockfd, "init");
     send_vector_to_python(sockfd, key);
-    // server: check if response from client is 1 ("1" means ok and "0" means problem)
+    // server: check if response from client is "ok"
     std::vector<unsigned char> response = read_from_python(sockfd);
     std::string s1(response.begin(), response.end());
-    assert( s1 == "ok");
+    assert(s1 == "ok");
 
     LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 3000) {
-        std::cout<<"cpp: You're inside the LIMITED_WHILE\n";
         CallOneOf(
                 fuzzed_data_provider,
                 [&]{
-                    std::cout<<"cpp: inside stream\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
-
-//                    chacha20.Print();
                     chacha20.Keystream(output.data(), output.size());
-//                    chacha20.Print();
-
-                    // server: send to our python script [6]["stream"][size][cpp_key_stream]
-                    std::cout<<"cpp: send to [6][\"stream\"][size][cpp_key_stream] python\n";
+                    // send to python server [6]["stream"]
                     send_to_python(sockfd, "stream");
-                    send_vector_to_python(sockfd, output);
-
-                    // server: check if response from client is 1 ("1" means ok and "0" means problem)
+                    send_to_python(sockfd, integralInRange);
+                    // get key_stream computed using python chacha20
                     std::vector<unsigned char> response = read_from_python(sockfd);
-
                     assert(response == output);
-                    std::cout<<"cpp: stream over\n";
                },
                [&]{
-                    std::cout<<"cpp: inside crypt\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
                     const std::vector <uint8_t> input = ConsumeFixedLengthByteVector(fuzzed_data_provider, output.size());
-                   chacha20.Print();
-                   chacha20.Crypt(input.data(), output.data(), input.size());
-                   chacha20.Print();
-
-                   // server: send to our python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
-                    std::cout<<"cpp: send to [5][\"crypt\"][size][plaintext][size][cpp_cipher_text] python\n";
+                    chacha20.Crypt(input.data(), output.data(), input.size());
+                    // send to python server [5]["crypt"][size][plaintext]
                     send_to_python(sockfd, "crypt");
                     send_vector_to_python(sockfd, input);
-                    send_vector_to_python(sockfd, output);
-
-                    // server: check if response from client is 1 ("1" means ok and "0" means problem)
-                    std::vector<unsigned char> response = read_from_python(sockfd);
-                    assert(response == output);
-                    std::cout<<"cpp: crypt over\n";
+                    // get ciphertext computed using python chacha20
+                    std::vector<unsigned char> ciphertext = read_from_python(sockfd);
+                    assert(ciphertext == output);
                 });
     }
     send_to_python(sockfd, "exit");
     response = read_from_python(sockfd);
     std::string s2(response.begin(), response.end());
     assert(s2 == "ok");
-    std::cout<<"cpp: fuzzing phase says bye!\n";
-    /* ************* End Fuzzing Phase *************************  */
+    /* ----------------------- end fuzzing phase -----------------------  */
 
     close(sockfd);
 }

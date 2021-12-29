@@ -21,7 +21,7 @@ except ImportError:
 
 def compat26Str(x): return x
 
-class ChaCha20PRF:
+class ChaCha20:
 
     """Pure python implementation of ChaCha cipher"""
 
@@ -104,9 +104,9 @@ class ChaCha20PRF:
     def chacha_block(key, counter, nonce, rounds):
         """Generate a state of a single block"""
         counter = bytearray(counter.to_bytes(8, sys.byteorder))
-        state = ChaCha20PRF.constants + key + ChaCha20PRF._bytearray_to_words(counter) + nonce
+        state = ChaCha20.constants + key + ChaCha20._bytearray_to_words(counter) + nonce
         working_state = state[:]
-        dbl_round = ChaCha20PRF.double_round
+        dbl_round = ChaCha20.double_round
         for _ in range(0, rounds // 2):
             dbl_round(working_state)
 
@@ -140,30 +140,37 @@ class ChaCha20PRF:
         self.rounds = rounds
 
         # convert bytearray key and nonce to little endian 32 bit unsigned ints
-        self.key = ChaCha20PRF._bytearray_to_words(key)
-        self.nonce = ChaCha20PRF._bytearray_to_words(nonce)
+        self.key = ChaCha20._bytearray_to_words(key)
+        self.nonce = ChaCha20._bytearray_to_words(nonce)
+
+        self.keystream_next_index = 0
+        self.keystream_bytes = self.key_stream() # pre-compute 64 bytes keystream
 
     def encrypt(self, plaintext):
         """Encrypt the data"""
         encrypted_message = bytearray()
-        next_counter = 1
-        for i, block in enumerate(plaintext[i:i+64] for i
-                                  in range(0, len(plaintext), 64)):
-            key_stream = self.key_stream(i)
-            next_counter = i + 1
-            encrypted_message += bytearray(x ^ y for x, y
-                                           in izip(key_stream, block))
-        if next_counter != 1:
-            self.counter = self.counter + next_counter # NOTE: update counters when <64 remaining
+        for i, block in enumerate(plaintext[i:i+64] for i in range(0, len(plaintext), 64)):
+            # i = 0,64, 128, 192
+            bytes_left_prev_keystream = 64 - self.keystream_next_index
+            if bytes_left_prev_keystream > 0:
+                encrypted_message += bytearray(x ^ y for x, y in izip(self.keystream_bytes[self.keystream_next_index:], block[:bytes_left_prev_keystream]))
+                self.counter += 1
+                self.keystream_bytes = self.key_stream()
+                self.keystream_next_index = 0
+            else:
+                self.counter += 1
+                self.keystream_bytes = self.key_stream()
+                self.keystream_next_index = 0
+                encrypted_message += bytearray(x ^ y for x, y in izip(self.keystream_bytes, block))
         return encrypted_message
 
-    def key_stream(self, counter):
+    def key_stream(self):
         """receive the key stream for nth block"""
-        key_stream = ChaCha20PRF.chacha_block(self.key,
-                                              self.counter + counter,
+        key_stream = ChaCha20.chacha_block(self.key,
+                                              self.counter,
                                               self.nonce,
                                               self.rounds)
-        key_stream = ChaCha20PRF.word_to_bytearray(key_stream)
+        key_stream = ChaCha20.word_to_bytearray(key_stream)
         return key_stream
 
     def decrypt(self, ciphertext):
