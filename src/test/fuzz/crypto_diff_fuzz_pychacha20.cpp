@@ -70,42 +70,114 @@ static void send_msg(int write_fd, std::string msg)
     }
 }
 
+/* return true if val is set, false for EOF */
+static bool read_uint32(int read_fd, uint32_t &val)
+{
+    unsigned char msgSizeBuf[4];
+    unsigned iBuf = 0;
+
+    while (iBuf < sizeof(msgSizeBuf))
+    {
+        ssize_t rc = read(read_fd, msgSizeBuf + iBuf, sizeof(msgSizeBuf) - iBuf);
+
+        if (rc == 0)
+        {
+            return false;
+        }
+        else if (rc < 0 )
+        {
+            printf("socket() failed: %s\n", strerror(errno));
+            std::cout << __func__ << "@" << __LINE__ << ":::Read ERROR" << std::endl;
+            exit(1);
+        }
+        else
+        {
+            iBuf += rc;
+        }
+    }
+
+    val = *(static_cast<uint32_t *>(static_cast<void *>(&msgSizeBuf[0])));
+
+    return true;
+}
+
+static std::vector<unsigned char> read_string(int read_fd, uint32_t sz)
+{
+    std::vector<unsigned char> msgBuf( sz);
+    unsigned iBuf = 0;
+
+    while (iBuf < sz)
+    {
+        ssize_t rc = ::read(read_fd, &(msgBuf[0]) + iBuf, sz - iBuf); //TODO: &(msgBuf[0]) + iBuf WTH is this
+
+        if ( rc == 0 )
+        {
+            std::cout << __func__ << "@" << __LINE__ << ":::EOF read" << std::endl;
+            exit(1);
+        }
+        else if ( rc < 0 )
+        {
+            std::cout << __func__ << "@" << __LINE__ << ":::Read ERROR during message" << std::endl;
+            exit(1);
+        }
+        else
+        {
+            iBuf += rc;
+        }
+    }
+    return msgBuf;
+}
+
 //TODO: use fancy optional maybe
-void send_to_python(int sockfd, std::string str, std::vector<uint8_t> v1={}, std::vector<uint8_t> v2={}){
+void send_to_python(int sockfd, std::string str){
 
     std::ostringstream os1;
     os1<<str;
     send_msg(sockfd, os1.str());
 
-    if(!v1.empty()){
-        std::ostringstream os2;
-        std::string v_as_str=std::string(v1.begin(), v1.end());
-        os2<<v_as_str; //TODO: Can we not pass the string directly. Why ostringstream?
-        send_msg(sockfd, os2.str());
-    }
-
-    //TODO: Maybe later, write this more compactly?
-    if(!v2.empty()){
-        std::ostringstream os2;
-        std::string v_as_str=std::string(v2.begin(), v2.end());
-        os2<<v_as_str;
-        send_msg(sockfd, os2.str());
-    }
+//    if(!v1.empty()){
+//        std::cout<<"send v1\n";
+//        std::ostringstream os2;
+//        std::string v_as_str=std::string(v1.begin(), v1.end());
+//        os2<<v_as_str; //TODO: Can we not pass the string directly. Why ostringstream?
+//        send_msg(sockfd, os2.str());
+//    }
+//
+//    //TODO: Maybe later, write this more compactly?
+//    if(!v2.empty()){
+//        std::cout<<"send v2\n";
+//        std::ostringstream os2;
+//        std::string v_as_str=std::string(v2.begin(), v2.end());
+//        os2<<v_as_str;
+//        send_msg(sockfd, os2.str());
+//    }
 }
 
-void read_from_python(int sockfd, int &response){
-     read(sockfd, &response, sizeof(response));
+void send_vector_to_python(int sockfd, std::vector <uint8_t> v){
+    std::cout<<"send v1\n";
+    std::ostringstream os2;
+    std::cout<<"size of v is"<<v.size()<<"\n";
+    std::string v_as_str = std::string(v.begin(), v.end()); //TODO: This NULL Being send is problem i think
+    std::cout<<"size of v_as_str is"<<v_as_str.size()<<"\n";
+    os2<<v_as_str; //TODO: Can we not pass the string directly. Why ostringstream?
+    send_msg(sockfd, os2.str());
+}
+
+//TODO: We need timeout.
+std::vector<unsigned char> read_from_python(int sockfd){
+    uint32_t apiArgSize;
+    if (!read_uint32(sockfd, apiArgSize)){
+        std::cout << "EOF white reading apiArgSize" << std::endl;
+        ::exit(1);
+    }
+    std::vector<unsigned char> apiArg = read_string(sockfd, apiArgSize);
+    return apiArg;
 }
 
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 {
     /* ************* initialisation of sockets ********************  */
-    /*
-     * This behaves like the server. TCP Server performs:
-     * create() ->  bind() ->  listen() -> accept()
-     */
     int sockfd, connfd;
-    socklen_t len;
     struct sockaddr_in servaddr, cli;
 
     // socket create and verification
@@ -114,52 +186,21 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
         std::cout<<"socket creation failed...\n";
         exit(0);
     }
-//    else
-//        printf("socket successfully created..\n");
-
-    // allows multiple sockets to be open on the same port.(No like) (maybe why this doesn't work?)
-    /*
-     * You can use setsockopt() to set the SO_REUSEADDR socket option, which explicitly allows a process to bind to a port which remains in TIME_WAIT
-     * (it still only allows a single process to be bound to that port). This is the both the simplest and the most effective option for reducing the
-     * "address already in use" error. https://hea-www.harvard.edu/~fine/Tech/addrinuse.html
-     */
-    int enable = 1;
-    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0){
-        std::cout<<"setsockopt(SO_REUSEADDR) failed\n";
-        exit(0);
-    }
     bzero(&servaddr, sizeof(servaddr));
 
     // assign IP, PORT
     servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
     servaddr.sin_port = htons(PORT);
 
-    // Binding newly created socket to given IP and verification
-    if ((bind(sockfd, (SA*)&servaddr, sizeof(servaddr))) != 0) {
-        std::cout<<"socket bind failed...\n";
-        exit(0);
-    }
-//    else
-//        std::cout<<"socket successfully binded..\n";
+    int optval = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)); //TODO: HMMMM
 
-    // Now server is ready to listen and verification
-    if ((listen(sockfd, 5)) != 0) {
-        std::cout<<"listen failed...\n";
+    // connect the client socket to server socket
+    if (connect(sockfd, (SA*)&servaddr, sizeof(servaddr)) != 0) {
+        std::cout<<"connection with the server failed...\n";
         exit(0);
     }
-//    else
-//        std::cout<<"server listening..\n";
-    len = sizeof(cli);
-
-    // Accept the data packet from client and verification
-    connfd = accept(sockfd, (SA*)&cli, &len);
-    if (connfd < 0) {
-        std::cout<<"server accept failed...\n"; //This will happen at some point of time. Need to fix.
-        exit(0);
-    }
-//    else
-//        std::cout<<"server accept the client...\n";
     /* ************* End initialisation ********************  */
 
     /* ************* Fuzzing Phase *************************  */
@@ -170,11 +211,12 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
     const std::vector<unsigned char> key = ConsumeFixedLengthByteVector(fuzzed_data_provider, 32);//TODO - support 16 to 32 bytes
     chacha20 = ChaCha20{key.data(), key.size()};
     // server: send to python script [4][init][key.size][key.data] to call ChaCha20PRF(key, 0)
-    send_to_python(connfd, "init", key);
+    send_to_python(sockfd, "init");
+    send_vector_to_python(sockfd, key);
     // server: check if response from client is 1 ("1" means ok and "0" means problem)
-    int response;
-    read_from_python(connfd, response);
-    assert(response == 1); //TODO: Maybe some better response message?
+    std::vector<unsigned char> response = read_from_python(sockfd);
+    std::string s1(response.begin(), response.end());
+    assert( s1 == "ok");
 
     LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 3000) {
         std::cout<<"cpp: You're inside the LIMITED_WHILE\n";
@@ -184,12 +226,20 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                     std::cout<<"cpp: inside stream\n";
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
+
+//                    chacha20.Print();
                     chacha20.Keystream(output.data(), output.size());
+//                    chacha20.Print();
+
                     // server: send to our python script [6]["stream"][size][cpp_key_stream]
-                    send_to_python(connfd, "stream", output);
+                    std::cout<<"cpp: send to [6][\"stream\"][size][cpp_key_stream] python\n";
+                    send_to_python(sockfd, "stream");
+                    send_vector_to_python(sockfd, output);
+
                     // server: check if response from client is 1 ("1" means ok and "0" means problem)
-                    read_from_python(connfd, response);
-                    assert(response == 1);
+                    std::vector<unsigned char> response = read_from_python(sockfd);
+
+                    assert(response == output);
                     std::cout<<"cpp: stream over\n";
                },
                [&]{
@@ -197,18 +247,26 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
                     uint32_t integralInRange = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 4096);
                     std::vector <uint8_t> output(integralInRange);
                     const std::vector <uint8_t> input = ConsumeFixedLengthByteVector(fuzzed_data_provider, output.size());
-                    chacha20.Crypt(input.data(), output.data(), input.size());
-                    // server: send to our python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
-                    send_to_python(connfd, "crypt", input, output);
+                   chacha20.Print();
+                   chacha20.Crypt(input.data(), output.data(), input.size());
+                   chacha20.Print();
+
+                   // server: send to our python script [5]["crypt"][size][plaintext][size][cpp_cipher_text]
+                    std::cout<<"cpp: send to [5][\"crypt\"][size][plaintext][size][cpp_cipher_text] python\n";
+                    send_to_python(sockfd, "crypt");
+                    send_vector_to_python(sockfd, input);
+                    send_vector_to_python(sockfd, output);
+
                     // server: check if response from client is 1 ("1" means ok and "0" means problem)
-                    read_from_python(connfd, response);
-                    assert(response == 1);
+                    std::vector<unsigned char> response = read_from_python(sockfd);
+                    assert(response == output);
                     std::cout<<"cpp: crypt over\n";
                 });
     }
-    send_to_python(connfd, "exit");
-    read_from_python(connfd, response);
-    assert(response == 1);
+    send_to_python(sockfd, "exit");
+    response = read_from_python(sockfd);
+    std::string s2(response.begin(), response.end());
+    assert(s2 == "ok");
     std::cout<<"cpp: fuzzing phase says bye!\n";
     /* ************* End Fuzzing Phase *************************  */
 

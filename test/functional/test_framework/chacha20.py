@@ -105,7 +105,6 @@ class ChaCha20PRF:
         """Generate a state of a single block"""
         counter = bytearray(counter.to_bytes(8, sys.byteorder))
         state = ChaCha20PRF.constants + key + ChaCha20PRF._bytearray_to_words(counter) + nonce
-
         working_state = state[:]
         dbl_round = ChaCha20PRF.double_round
         for _ in range(0, rounds // 2):
@@ -147,12 +146,15 @@ class ChaCha20PRF:
     def encrypt(self, plaintext):
         """Encrypt the data"""
         encrypted_message = bytearray()
+        next_counter = 1
         for i, block in enumerate(plaintext[i:i+64] for i
                                   in range(0, len(plaintext), 64)):
             key_stream = self.key_stream(i)
+            next_counter = i + 1
             encrypted_message += bytearray(x ^ y for x, y
                                            in izip(key_stream, block))
-
+        if next_counter != 1:
+            self.counter = self.counter + next_counter # NOTE: update counters when <64 remaining
         return encrypted_message
 
     def key_stream(self, counter):
