@@ -8,13 +8,14 @@ import logging
 import os
 import random
 
-from .bip324_cipher import FSChaCha20, FSChaCha20Poly1305
-from .ellswift import ellswift_create, ellswift_ecdh_xonly
-from .key import hkdf_sha256, TaggedHash
+from bip324_cipher import FSChaCha20, FSChaCha20Poly1305
+from ellswift import ellswift_create, ellswift_ecdh_xonly
+from key import hkdf_sha256, TaggedHash
 
 logger = logging.getLogger("TestFramework.v2_p2p")
 
 MAGIC_BYTES = {
+    "mainnet": b"\xf9\xbe\xb4\xd9",   # mainnet
     "regtest": b"\xfa\xbf\xb5\xda"   # regtest
 }
 CHACHA20POLY1305_EXPANSION = 16
@@ -156,7 +157,7 @@ class EncryptedP2PState:
     def initialize_v2_transport(self, ecdh_secret):
         """Return a peer object with various BIP324 derived keys and ciphers."""
         peer = {}
-        salt = b'bitcoin_v2_shared_secret' + MAGIC_BYTES["regtest"]
+        salt = b'bitcoin_v2_shared_secret' + MAGIC_BYTES["mainnet"]
         for name, length in (('initiator_L', 32), ('initiator_P', 32), ('responder_L', 32), ('responder_P', 32),
                              ('garbage_terminators', 32), ('session_id', 32)):
             peer[name] = hkdf_sha256(salt=salt, ikm=ecdh_secret, info=name.encode('utf-8'), length=length)

@@ -4,8 +4,8 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """ChaCha20 Poly1305 AEAD Construction in RFC 8439, FSChaCha20Poly1305 and FSChaCha20 for BIP 324"""
 
-from .chacha20 import chacha20_block
-from .poly1305 import Poly1305
+from chacha20 import chacha20_block
+from poly1305 import Poly1305
 
 REKEY_INTERVAL = 224 # packets
 
