@@ -1,9 +1,11 @@
 # Based on implementation by Hubert Kario
 # from https://github.com/ph4r05/py-chacha20poly1305
+# Modified to allow 64 bit nonce and keystream reuse
 
 import struct
+import sys
 
-class ChaCha:
+class ChaCha20:
 
     """Pure python implementation of ChaCha cipher"""
 
@@ -85,15 +87,15 @@ class ChaCha:
     @staticmethod
     def chacha_block(key, counter, nonce, rounds):
         """Generate a state of a single block"""
-        state = ChaCha.constants + key + [counter] + nonce
+        counter = bytearray(counter.to_bytes(8, sys.byteorder))
+        state = ChaCha20.constants + key + ChaCha20._bytearray_to_words(counter) + nonce
 
         working_state = state[:]
-        dbl_round = ChaCha.double_round
+        dbl_round = ChaCha20.double_round
         for _ in range(0, rounds // 2):
             dbl_round(working_state)
 
-        return [(st + wrkSt) & 0xffffffff for st, wrkSt
-                in zip(state, working_state)]
+        return [(st + wrkSt) & 0xffffffff for st, wrkSt in zip(state, working_state)]
 
     @staticmethod
     def word_to_bytearray(state):
@@ -112,35 +114,46 @@ class ChaCha:
         """Set the initial state for the ChaCha cipher"""
         if len(key) != 32:
             raise ValueError("Key must be 256 bit long")
-        if len(nonce) != 12:
-            raise ValueError("Nonce must be 96 bit long")
+        nonce = bytearray(nonce.to_bytes(8, sys.byteorder))
+        if len(nonce) != 8:
+            raise ValueError("Nonce must be 64 bit long")
         self.key = []
         self.nonce = []
         self.counter = counter
         self.rounds = rounds
 
         # convert bytearray key and nonce to little endian 32 bit unsigned ints
-        self.key = ChaCha._bytearray_to_words(key)
-        self.nonce = ChaCha._bytearray_to_words(nonce)
+        self.key = ChaCha20._bytearray_to_words(key)
+        self.nonce = ChaCha20._bytearray_to_words(nonce)
+
+        # pre-compute 64 bytes of keystream
+        self.keystream_next_index = 0
+        self.keystream_bytes = self.key_stream()
 
     def encrypt(self, plaintext):
         """Encrypt the data"""
         encrypted_message = bytearray()
-        for i, block in enumerate(plaintext[i:i+64] for i
-                                  in range(0, len(plaintext), 64)):
-            key_stream = self.key_stream(i)
-            encrypted_message += bytearray(x ^ y for x, y
-                                           in zip(key_stream, block))
-
+        for i, block in enumerate(plaintext[i:i+64] for i in range(0, len(plaintext), 64)):
+            bytes_left_prev_keystream = 64 - self.keystream_next_index
+            if bytes_left_prev_keystream > 0:
+                encrypted_message += bytearray(x ^ y for x, y in zip(self.keystream_bytes[self.keystream_next_index:], block[:bytes_left_prev_keystream]))
+                self.counter += 1
+                self.keystream_bytes = self.key_stream()
+                self.keystream_next_index = 0
+            else:
+                self.counter += 1
+                self.keystream_bytes = self.key_stream()
+                self.keystream_next_index = 0
+                encrypted_message += bytearray(x ^ y for x, y in zip(self.keystream_bytes, block))
         return encrypted_message
 
-    def key_stream(self, counter):
-        """receive the key stream for nth block"""
-        key_stream = ChaCha.chacha_block(self.key,
-                                         self.counter + counter,
+    def key_stream(self):
+        """receive the key stream"""
+        key_stream = ChaCha20.chacha_block(self.key,
+                                         self.counter,
                                          self.nonce,
                                          self.rounds)
-        key_stream = ChaCha.word_to_bytearray(key_stream)
+        key_stream = ChaCha20.word_to_bytearray(key_stream)
         return key_stream
 
     def decrypt(self, ciphertext):
