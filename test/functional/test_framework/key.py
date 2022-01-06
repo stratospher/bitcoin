@@ -93,6 +93,8 @@ class EllipticCurve:
         x1, y1, z1 = p1
         z2 = pow(z1, 2, self.p)
         z4 = pow(z2, 2, self.p)
+        if (z1 == 0):
+            return None
         return z1 != 0 and (pow(x1, 3, self.p) + self.a * x1 * z4 + self.b * z2 * z4 - pow(y1, 2, self.p)) % self.p == 0
 
     def is_x_coord(self, x):
