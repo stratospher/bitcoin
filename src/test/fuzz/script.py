@@ -12,8 +12,8 @@ if os.path.exists("/tmp/socket_test.s"):
     os.remove("/tmp/socket_test.s")
 
 def main():
+    print("Script Hello!!!")
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(60)
     s.bind("/tmp/socket_test.s")
     s.listen(1)
     while True:
@@ -72,3 +72,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    print("Script Bye!!!")

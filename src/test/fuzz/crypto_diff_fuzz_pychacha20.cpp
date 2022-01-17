@@ -140,6 +140,7 @@ void send_to_python(int sockfd, uint32_t num)
 FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
 {
     /* ----------------------- socket initialisation --------------------------  */
+    std::cout << "socket initialisation\n";
     struct sockaddr_un addr;
 
     // Create a new client socket with domain: AF_UNIX, type: SOCK_STREAM, protocol: 0
@@ -167,7 +168,9 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
         exit(1);
     }
     /* ----------------------- initialisation over -----------------------  */
+    std::cout << "socket initialisation over\n";
     /* ----------------------- fuzzing phase ------------------------------ */
+    std::cout << "fuzzing initialisation\n";
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
     ChaCha20 chacha20;
 
@@ -180,7 +183,7 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
     std::vector<unsigned char> response = read_from_python(sockfd);
     std::string s1(response.begin(), response.end());
     assert(s1 == "ok");
-
+    std::cout<<"py response obtained\n";
     LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 3000)
     {
         CallOneOf(
@@ -214,5 +217,6 @@ FUZZ_TARGET(crypto_diff_fuzz_pychacha20)
     std::string s2(response.begin(), response.end());
     assert(s2 == "ok");
     /* ----------------------- end fuzzing phase -----------------------  */
+    std::cout << "fuzzing over\n";
     close(sockfd);
 }

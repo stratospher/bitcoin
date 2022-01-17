@@ -134,6 +134,14 @@ def main():
             logging.info("Please consider adding a fuzz corpus at https://github.com/bitcoin-core/qa-assets")
 
     try:
+        if 'crypto_diff_fuzz_pychacha20' in args.target:
+        #     # output += "hi"
+            theproc =subprocess.Popen('src/test/fuzz/script.py', shell = True)
+            theproc.communicate()
+            import time; time.sleep(2)
+            # check if socket is still connected
+        #     # sleep(10)
+        #     # output += "bye"
         help_output = subprocess.run(
             args=[
                 os.path.join(config["environment"]["BUILDDIR"], 'src', 'test', 'fuzz', 'fuzz'),
@@ -217,7 +225,7 @@ def generate_corpus(*, fuzz_pool, src_dir, build_dir, corpus_dir, targets):
     for future in as_completed(futures):
         future.result()
 
-
+# todo: what's this?
 def merge_inputs(*, fuzz_pool, corpus, test_list, src_dir, build_dir, merge_dir):
     logging.info("Merge the inputs from the passed dir into the corpus_dir. Passed dir {}".format(merge_dir))
     jobs = []
@@ -266,6 +274,12 @@ def run_once(*, fuzz_pool, corpus, test_list, src_dir, build_dir, use_valgrind):
 
         def job(t, args):
             output = 'Run {} with args {}'.format(t, args)
+            # import ipdb; ipdb.set_trace()
+            # if t == 'crypto_diff_fuzz_pychacha20':
+            #     output += "hi"
+            #     subprocess.Popen(['python','src/test/fuzz/script.py'])
+            #     sleep(10)
+            #     output += "bye"
             result = subprocess.run(
                 args,
                 env=get_fuzz_env(target=t, source_dir=src_dir),

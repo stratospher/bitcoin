@@ -246,8 +246,9 @@ task:
   env:
     << : *CIRRUS_EPHEMERAL_WORKER_TEMPLATE_ENV
     FILE_ENV: "./ci/test/00_setup_env_native_fuzz.sh"
-  python_script:
-    - python src/test/fuzz/script.py
+#  python_script:
+##    - if [ "$CIRRUS_PR" = "" ]; then python src/test/fuzz/script.py; fi
+#    - python src/test/fuzz/script.py
 
 #task:
 #  name: '[multiprocess, i686, DEBUG] [focal]'
