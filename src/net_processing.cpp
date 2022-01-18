@@ -1166,6 +1166,12 @@ void PeerManagerImpl::InitializeNode(CNode *pnode)
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, std::move(peer));
     }
+
+    // TODO: This is where we should check if pnode advertises NODE_P2P_V2
+    // And if so:
+    // (1) Generate ephemeral keypair
+    // (2) Initiate handshake
+    // (3) Where will ...
     if (!pnode->IsInboundConn()) {
         PushNodeVersion(*pnode, GetTime());
     }

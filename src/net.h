@@ -20,6 +20,7 @@
 #include <netbase.h>
 #include <policy/feerate.h>
 #include <protocol.h>
+#include <pubkey.h>
 #include <random.h>
 #include <span.h>
 #include <streams.h>
@@ -466,7 +467,7 @@ public:
 
 constexpr size_t BIP324_KEY_LEN = 32;
 
-using BIP324Key = std::vector<uint8_t, secure_allocator<uint8_t>>;
+using BIP324Key = CPrivKey;
 
 struct BIP324Keys {
     BIP324Key initiator_F;
@@ -546,6 +547,7 @@ public:
     const uint64_t nKeyedNetGroup;
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
+    std::atomic_bool tried_v2_handshake{false};
 
     bool IsOutboundOrBlockRelayConn() const {
         switch (m_conn_type) {
@@ -584,6 +586,10 @@ public:
 
     bool IsInboundConn() const {
         return m_conn_type == ConnectionType::INBOUND;
+    }
+
+    bool PreferV2Conn() const {
+        return SupportsV2Transport(nServices) && SupportsV2Transport(nLocalServices);
     }
 
     bool ExpectServicesFromConn() const {
@@ -666,6 +672,8 @@ public:
     /** Lowest measured round-trip time. Used as an inbound peer eviction
      * criterium in CConnman::AttemptToEvictConnection. */
     std::atomic<std::chrono::microseconds> m_min_ping_time{std::chrono::microseconds::max()};
+
+    EllSqPubKey hdata_ellsq_pubkey;
 
     CNode(NodeId id, ServiceFlags nLocalServicesIn, SOCKET hSocketIn, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, const std::string& addrNameIn, ConnectionType conn_type_in, bool inbound_onion);
     ~CNode();
@@ -756,10 +764,51 @@ public:
         m_min_ping_time = std::min(m_min_ping_time.load(), ping_time);
     }
 
+    void InitV2P2P(const CPubKey& peer_pubkey, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, bool initiating) {
+        ECDHSecret ecdh_secret;
+        v2_priv_key.ComputeECDHSecret(peer_pubkey, ecdh_secret);
+        LogPrintf("#### ECDH Secret: %s\n", HexStr(ecdh_secret));
+
+        // TODO:: I WAS HERE.
+        BIP324Keys v2_keys;
+        DeriveBIP324Keys(std::move(ecdh_secret), initiator_hdata, responder_hdata, v2_keys);
+
+        LogPrintf("#### ECDH Secret: %s\n", HexStr(ecdh_secret));
+        LogPrintf("#### initiator_F: %s\n", HexStr(v2_keys.initiator_F));
+        LogPrintf("#### initiator_V: %s\n", HexStr(v2_keys.initiator_V));
+        LogPrintf("#### responder_F: %s\n", HexStr(v2_keys.responder_F));
+        LogPrintf("#### responder_V: %s\n", HexStr(v2_keys.responder_V));
+        LogPrintf("#### session_id: %s\n", HexStr(v2_keys.session_id));
+
+        if (initiating) {
+            m_deserializer = std::make_unique<V2TransportDeserializer>(V2TransportDeserializer(NodeId{0}, v2_keys.responder_F, v2_keys.responder_V));
+            m_serializer = std::make_unique<V2TransportSerializer>(V2TransportSerializer(v2_keys.initiator_F, v2_keys.initiator_V));
+        } else {
+            m_deserializer = std::make_unique<V2TransportDeserializer>(V2TransportDeserializer(NodeId{0}, v2_keys.initiator_F, v2_keys.initiator_V));
+            m_serializer = std::make_unique<V2TransportSerializer>(V2TransportSerializer(v2_keys.responder_F, v2_keys.responder_V));
+        }
+    }
+
+    void EnsureInitV2Key(bool initiating) {
+        static const std::string version = "version\x00";
+
+        // v2_priv_key must be valid and the initiator's pubkey cannot begin with NETWORK_MAGIC || "version\x00"
+        while (!v2_priv_key.IsValid() || (initiating &&
+                    memcmp(hdata_ellsq_pubkey.data(), Params().MessageStart(), CMessageHeader::MESSAGE_START_SIZE) == 0 &&
+                    memcmp(hdata_ellsq_pubkey.data() + CMessageHeader::MESSAGE_START_SIZE, version.data(), version.size()) == 0)) {
+            v2_priv_key.MakeNewKey(true);
+
+            std::array<uint8_t, 32> rnd32;
+            GetRandBytes(rnd32.data(), 32);
+            hdata_ellsq_pubkey = v2_priv_key.GetPubKey().EllSqEncode(rnd32).value();
+        }
+    }
+
 private:
     const NodeId id;
     const uint64_t nLocalHostNonce;
     const ConnectionType m_conn_type;
+
     std::atomic<int> m_greatest_common_version{INIT_PROTO_VERSION};
 
     //! Services offered to this peer.
@@ -780,6 +829,7 @@ private:
     const ServiceFlags nLocalServices;
 
     std::list<CNetMessage> vRecvMsg; // Used only by SocketHandler thread
+    CKey v2_priv_key;
 
     // Our address, as reported by the peer
     CService addrLocal GUARDED_BY(cs_addrLocal);
@@ -912,6 +962,7 @@ public:
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
 
     void PushMessage(CNode* pnode, CSerializedNetMsg&& msg);
+    void PushV2EllSqPubkey(CNode* pnode);
 
     using NodeFn = std::function<void(CNode*)>;
     void ForEachNode(const NodeFn& func)

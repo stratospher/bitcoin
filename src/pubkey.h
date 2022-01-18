@@ -33,6 +33,7 @@ typedef uint256 ChainCode;
 constexpr size_t ELLSQ_ENCODED_SIZE = 64;
 using EllSqPubKey = std::array<uint8_t, ELLSQ_ENCODED_SIZE>;
 
+
 /** An encapsulated public key. */
 class CPubKey
 {

@@ -14,6 +14,7 @@ class V2TransportTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain=True
         self.num_nodes = 1
+        self.extra_args = [["-v2transport=0"]]
 
     def run_test(self):
         network_info = self.nodes[0].getnetworkinfo()
