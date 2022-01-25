@@ -298,6 +298,11 @@ class ECPubKey():
         else:
             return bytes([0x04]) + p[0].to_bytes(32, 'big') + p[1].to_bytes(32, 'big')
 
+    def get_group_element(self):
+        assert(self.valid)
+        p = SECP256K1.affine(self.p)
+        return fe(p[0]), fe(p[1])
+
     def verify_ecdsa(self, sig, msg, low_s=True):
         """Verify a strictly DER-encoded ECDSA signature against this pubkey.
 
@@ -540,6 +545,63 @@ def sign_schnorr(key, msg, aux=None, flip_p=False, flip_r=False):
     k = kp if SECP256K1.has_even_y(R) != flip_r else SECP256K1_ORDER - kp
     e = int.from_bytes(TaggedHash("BIP0340/challenge", R[0].to_bytes(32, 'big') + P[0].to_bytes(32, 'big') + msg), 'big') % SECP256K1_ORDER
     return R[0].to_bytes(32, 'big') + ((k + e * sec) % SECP256K1_ORDER).to_bytes(32, 'big')
+
+class ECDH():
+    """An Elliptic-curve Diffie–Hellman (ECDH) key agreement protocol that allows two parties,
+    each having an elliptic-curve public–private key pair, to establish a shared secret over an insecure channel."""
+    def __init__(self, pubkey, privkey):
+        self.pubkey = pubkey
+        self.privkey = int.from_bytes(privkey, "big")
+
+    def shared_secret(self):
+        their_pubkey = self.pubkey.get_group_element() # TODO: Simplify interface in ellsq!!
+        their_pubkey = (their_pubkey[0].val, their_pubkey[1].val, 1)
+        x, y, _ = SECP256K1.affine(SECP256K1.mul([(their_pubkey, self.privkey)])) # TODO: Simplify
+        # TODO: consider using alternate secp256k1 way of computing version
+        # version = (y.val's 31st byte & 0x01) | 0x02
+        if y % 2 == 0:
+            version = b'\x02'
+        else:
+            version = b'\x03'
+        m = hashlib.sha256()
+        m.update(version)
+        m.update(x.to_bytes(256, 'big')) # TODO: HMMM???? 256 bits really. check.
+        return m.hexdigest()
+
+def hkdf_extract(salt, input_key_material, hash=hashlib.sha256):
+    """
+    Extract a pseudorandom key suitable for use with hkdf_expand
+    from the input_key_material and a salt using HMAC with the
+    provided hash.
+    salt should be a random, application-specific byte string. If
+    salt is None or the empty string, an all-zeros string of the same
+    length as the hash's block size will be used instead per the RFC.
+    """
+    hash_len = hash().digest_size
+    if salt == None or len(salt) == 0:
+        salt = bytearray((0,) * hash_len)
+    return hmac.new(bytes(salt), input_key_material.encode('utf-8'), hash).digest()
+
+def hkdf_expand(pseudo_random_key, info=b"", length=32, hash=hashlib.sha256):
+    """
+    Expand `pseudo_random_key` and `info` into a key of length `bytes` using
+    HKDF's expand function based on HMAC with the provided hash.
+    """
+    hash_len = hash().digest_size
+    length = int(length)
+    if length > 255 * hash_len:
+        raise Exception("Cannot expand to more than 255 * %d = %d bytes using the specified hash function" % \
+                        (hash_len, 255 * hash_len))
+    blocks_needed = length // hash_len + (0 if length % hash_len == 0 else 1) # ceil
+    okm = b""
+    output_block = b""
+    for counter in range(blocks_needed):
+        str = (output_block + info + bytearray((counter + 1,))).decode("utf-8")
+        output_block = hmac.new(pseudo_random_key,  str.encode('utf-8'), \
+                                hash).digest()
+        okm += output_block
+    return okm[:length]
+
 
 class TestFrameworkKey(unittest.TestCase):
     def test_schnorr(self):
