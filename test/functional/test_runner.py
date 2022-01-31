@@ -69,9 +69,12 @@ TEST_EXIT_SKIPPED = 77
 
 TEST_FRAMEWORK_MODULES = [
     "address",
+    "aead",
+    "chacha20",
     "blocktools",
     "ellsq",
     "muhash",
+    "poly1305",
     "key",
     "script",
     "segwit_addr",
@@ -195,6 +198,7 @@ BASE_SCRIPTS = [
     'p2p_getaddr_caching.py',
     'p2p_getdata.py',
     'p2p_addrfetch.py',
+    'p2p_encrypted.py', # TODO: Figure out the runtime approx
     'rpc_net.py',
     'wallet_keypool.py --legacy-wallet',
     'wallet_keypool.py --descriptors',
