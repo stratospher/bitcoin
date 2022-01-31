@@ -49,13 +49,25 @@ MAC_TAGLEN = 16
 POLY1305_KEYLEN = 32
 
 # Yields (disconnect, ignore_message, bytes)
-def ChaCha20Poly1305AEAD(key_F, key_V, is_encrypt, crypt_bytes, set_ignore=False):
-    keystream_F = next(ChaCha20Forward4064DRBG(key_F))
-    keystream_V = next(ChaCha20Forward4064DRBG(key_V))
-    pos_F = 0
-    pos_V = 0
+# def ChaCha20Poly1305AEAD(key_F, key_V, is_encrypt, crypt_bytes, set_ignore=False):
+#     keystream_F_obj = ChaCha20Forward4064DRBG(key_F)
+#     keystream_V_obj = ChaCha20Forward4064DRBG(key_V)
+#next(keystream_V_obj)
 
-    while True:
+
+    # while True:
+class ChaCha20Poly1305AEAD:
+
+    def __init__(self, key_F, key_V):
+        self.pos_F = 0
+        self.pos_V = 0
+        self.keystream_F_obj = ChaCha20Forward4064DRBG(key_F)
+        self.keystream_V_obj = ChaCha20Forward4064DRBG(key_V)
+        self.keystream_F = next(self.keystream_F_obj)
+        self.keystream_V = next(self.keystream_V_obj)
+
+    def AEAD(self, is_encrypt, crypt_bytes, set_ignore=False):
+        print("self.keystream_F",self.keystream_F.hex())
         ret = b""
         ignore = False
         disconnect = False
@@ -64,44 +76,106 @@ def ChaCha20Poly1305AEAD(key_F, key_V, is_encrypt, crypt_bytes, set_ignore=False
             raise "MessageTooLongErr"
 
         # Make sure we have at least 35 bytes in keystream_F
-        if pos_F + HEADER_LEN + POLY1305_KEYLEN >= len(keystream_F):
-            keystream_F = keystream_F[pos_F:] + next(ChaCha20Forward4064DRBG(key_F))
-            pos_F = 0
+        if self.pos_F + HEADER_LEN + POLY1305_KEYLEN >= len(self.keystream_F):
+            self.keystream_F = self.keystream_F[self.pos_F:] + next(self.keystream_F_obj)
+            self.pos_F = 0
 
         # Make sure we have at least len(crypt_bytes) bytes in keystream_V
-        if pos_V + len(crypt_bytes) >= len(keystream_V):
-            keystream_V = keystream_V[pos_V:] + next(ChaCha20Forward4064DRBG(key_V))
-            pos_V = 0
+        if self.pos_V + len(crypt_bytes) >= len(self.keystream_V):
+            self.keystream_V = self.keystream_V[self.pos_V:] + next(self.keystream_V_obj)
+            self.pos_V = 0
 
         if is_encrypt:
             header = len(crypt_bytes)
             if set_ignore:
                 header = header | (1 << 23)
-            ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[:HEADER_LEN], keystream_F[pos_F:(pos_F + HEADER_LEN)])])
+            ret += bytes([aa ^ bb for aa, bb in zip(header.to_bytes(3, byteorder="little"), self.keystream_F[self.pos_F:(self.pos_F + HEADER_LEN)])])
         else:
-            header = bitwise_xor_le24toh(crypt_bytes[:HEADER_LEN], keystream_F[:HEADER_LEN])
-            ret += header
+            print("pos_F",self.pos_F)
+            print("crypt_bytes[:HEADER_LEN] is",crypt_bytes[:HEADER_LEN].hex())
+            print("keystream_F[:HEADER_LEN] is",self.keystream_F[self.pos_F:self.pos_F+HEADER_LEN].hex())
+            header = bitwise_xor_le24toh(crypt_bytes[:HEADER_LEN], self.keystream_F[self.pos_F:self.pos_F+HEADER_LEN])
             ignore = bitwise_and(header, 1<<23) != 0
-            payload_len = len(crypt_bytes) - HEADER_LEN - MAC_TAGLEN # payload_len = bitwise_and(header, ~(1<<23))
-        pos_F += HEADER_LEN
+            payload_len = bitwise_and(header, ~(1<<23))
+        self.pos_F += HEADER_LEN
 
-        poly1305_key = keystream_F[pos_F:(pos_F + POLY1305_KEYLEN)]
-        pos_F += POLY1305_KEYLEN
-
+        poly1305_key = self.keystream_F[self.pos_F:(self.pos_F + POLY1305_KEYLEN)]
+        self.pos_F += POLY1305_KEYLEN
+        print("update pos_F",self.pos_F)
         if is_encrypt:
-            ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[HEADER_LEN:], keystream_V[pos_V:(pos_V + len(crypt_bytes))])])
-            pos_V += len(crypt_bytes)
+            ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes, self.keystream_V[self.pos_V:(self.pos_V + len(crypt_bytes))])])
+            self.pos_V += len(crypt_bytes)
             ret += Poly1305(poly1305_key).create_tag(ret)
         else:
-            if (Poly1305(poly1305_key).create_tag(crypt_bytes[:(HEADER_LEN + payload_len)]) != crypt_bytes[(HEADER_LEN + payload_len):]):
+            # print("keystream_F is",keystream_F.hex())
+            print("len(crypt_bytes)",len(crypt_bytes))
+            print('payload_len',payload_len)
+            print("HEADER_LEN + payload_len",HEADER_LEN + payload_len)
+            print("crypt_bytes[(HEADER_LEN + payload_len):]",crypt_bytes[(HEADER_LEN + payload_len):(HEADER_LEN + payload_len + MAC_TAGLEN)].hex())
+            if (Poly1305(poly1305_key).create_tag(crypt_bytes[:(HEADER_LEN + payload_len)]) != crypt_bytes[(HEADER_LEN + payload_len):(HEADER_LEN + payload_len+MAC_TAGLEN)]):
                 disconnect = True
 
-            PLAIN_LEN = len(crypt_bytes) - HEADER_LEN - MAC_TAGLEN
             # Decrypt only if authenticated
             if (not disconnect):
-                ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[HEADER_LEN:HEADER_LEN+PLAIN_LEN], keystream_V[pos_V:(pos_V + PLAIN_LEN)])])
+                ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[HEADER_LEN:HEADER_LEN+payload_len], self.keystream_V[self.pos_V:(self.pos_V + payload_len)])])
 
             # Advance the keystream regardless
-            pos_V += PLAIN_LEN
+            self.pos_V += payload_len
 
-        yield disconnect, ignore, ret
+        return disconnect, ignore, ret
+
+# Yields (disconnect, ignore_message, bytes)
+# def ChaCha20Poly1305AEAD(key_F, key_V, is_encrypt, crypt_bytes, set_ignore=False):
+#     keystream_F = next(ChaCha20Forward4064DRBG(key_F))
+#     keystream_V = next(ChaCha20Forward4064DRBG(key_V))
+#     pos_F = 0
+#     pos_V = 0
+# 
+#     while True:
+#         ret = b""
+#         ignore = False
+#         disconnect = False
+# 
+#         if is_encrypt and len(crypt_bytes) >= 2**23:
+#             raise "MessageTooLongErr"
+# 
+#         # Make sure we have at least 35 bytes in keystream_F
+#         if pos_F + HEADER_LEN + POLY1305_KEYLEN >= len(keystream_F):
+#             keystream_F = keystream_F[pos_F:] + next(ChaCha20Forward4064DRBG(key_F))
+#             pos_F = 0
+# 
+#         # Make sure we have at least len(crypt_bytes) bytes in keystream_V
+#         if pos_V + len(crypt_bytes) >= len(keystream_V):
+#             keystream_V = keystream_V[pos_V:] + next(ChaCha20Forward4064DRBG(key_V))
+#             pos_V = 0
+# 
+#         if is_encrypt:
+#             header = len(crypt_bytes)
+#             if set_ignore:
+#                 header = header | (1 << 23)
+#             ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[:HEADER_LEN], keystream_F[pos_F:(pos_F + HEADER_LEN)])])
+#         else:
+#             header = bitwise_xor_le24toh(crypt_bytes[:HEADER_LEN], keystream_F[pos_F:pos_F+HEADER_LEN])
+#             ignore = bitwise_and(header, 1<<23) != 0
+#             payload_len = bitwise_and(header, ~(1<<23))
+#         pos_F += HEADER_LEN
+# 
+#         poly1305_key = keystream_F[pos_F:(pos_F + POLY1305_KEYLEN)]
+#         pos_F += POLY1305_KEYLEN
+# 
+#         if is_encrypt:
+#             ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[HEADER_LEN:], keystream_V[pos_V:(pos_V + len(crypt_bytes))])])
+#             pos_V += len(crypt_bytes)
+#             ret += Poly1305(poly1305_key).create_tag(ret)
+#         else:
+#             if (Poly1305(poly1305_key).create_tag(crypt_bytes[:(HEADER_LEN + payload_len)]) != crypt_bytes[(HEADER_LEN + payload_len):(HEADER_LEN + payload_len+MAC_TAGLEN)]):
+#                 disconnect = True
+# 
+#             # Decrypt only if authenticated
+#             if (not disconnect):
+#                 ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes[HEADER_LEN:HEADER_LEN+payload_len], keystream_V[pos_V:(pos_V + payload_len)])])
+# 
+#             # Advance the keystream regardless
+#             pos_V += payload_len
+# 
+#         yield disconnect, ignore, ret

@@ -565,7 +565,7 @@ class ECDH():
             version = b'\x03'
         m = hashlib.sha256()
         m.update(version)
-        m.update(x.to_bytes(256, 'big')) # TODO: HMMM???? 256 bits really. check.
+        m.update(x.to_bytes(32, 'big')) # TODO: HMMM???? 32 bits really. check.
         return m.hexdigest()
 
 def hkdf_extract(salt, input_key_material, hash=hashlib.sha256):
@@ -580,7 +580,7 @@ def hkdf_extract(salt, input_key_material, hash=hashlib.sha256):
     hash_len = hash().digest_size
     if salt == None or len(salt) == 0:
         salt = bytearray((0,) * hash_len)
-    return hmac.new(bytes(salt), input_key_material.encode('utf-8'), hash).digest()
+    return hmac.new(bytes(salt), input_key_material, hash).digest()
 
 def hkdf_expand(pseudo_random_key, info=b"", length=32, hash=hashlib.sha256):
     """
