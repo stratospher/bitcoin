@@ -1,5 +1,24 @@
 AC_PREREQ([2.60])
-AC_INIT([libsecp256k1],[0.1])
+
+# The package (a.k.a. release) version is based on semantic versioning 2.0.0 of
+# the API. All changes in experimental modules are treated as
+# backwards-compatible and therefore at most increase the minor version.
+define(_PKG_VERSION_MAJOR, 0)
+define(_PKG_VERSION_MINOR, 1)
+define(_PKG_VERSION_BUILD, 0)
+define(_PKG_VERSION_IS_RELEASE, false)
+
+# The library version is based on libtool versioning of the ABI. The set of
+# rules for updating the version can be found here:
+# https://www.gnu.org/software/libtool/manual/html_node/Updating-version-info.html
+# All changes in experimental modules are treated as if they don't affect the
+# interface and therefore only increase the revision.
+define(_LIB_VERSION_CURRENT, 0)
+define(_LIB_VERSION_REVISION, 0)
+define(_LIB_VERSION_AGE, 0)
+
+AC_INIT([libsecp256k1],m4_join([.], _PKG_VERSION_MAJOR, _PKG_VERSION_MINOR, _PKG_VERSION_BUILD)m4_if(_PKG_VERSION_IS_RELEASE, [true], [], [-pre]),[https://github.com/bitcoin-core/secp256k1/issues],[libsecp256k1],[https://github.com/bitcoin-core/secp256k1])
+
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([build-aux/m4])
 AC_CANONICAL_HOST
@@ -136,6 +155,11 @@ AC_ARG_ENABLE(module_schnorrsig,
     [enable_module_schnorrsig=$enableval],
     [enable_module_schnorrsig=no])
 
+AC_ARG_ENABLE(module_ellsq,
+    AS_HELP_STRING([--enable-module-ellsq],[enable Elligator^2 module (experimental)]),
+    [enable_module_ellsq=$enableval],
+    [enable_module_ellsq=no])
+
 AC_ARG_ENABLE(external_default_callbacks,
     AS_HELP_STRING([--enable-external-default-callbacks],[enable external default callback functions [default=no]]),
     [use_external_default_callbacks=$enableval],
@@ -152,7 +176,7 @@ AC_ARG_WITH([ecmult-window], [AS_HELP_STRING([--with-ecmult-window=SIZE|auto],
 [window size for ecmult precomputation for verification, specified as integer in range [2..24].]
 [Larger values result in possibly better performance at the cost of an exponentially larger precomputed table.]
 [The table will store 2^(SIZE-1) * 64 bytes of data but can be larger in memory due to platform-specific padding and alignment.]
-[A window size larger than 15 will require you delete the prebuilt ecmult_static_pre_g.h file so that it can be rebuilt.]
+[A window size larger than 15 will require you delete the prebuilt precomputed_ecmult.c file so that it can be rebuilt.]
 [For very large window sizes, use "make -j 1" to reduce memory use during compilation.]
 ["auto" is a reasonable setting for desktop machines (currently 15). [default=auto]]
 )],
@@ -333,6 +357,10 @@ if test x"$enable_module_extrakeys" = x"yes"; then
   AC_DEFINE(ENABLE_MODULE_EXTRAKEYS, 1, [Define this symbol to enable the extrakeys module])
 fi
 
+if test x"$enable_module_ellsq" = x"yes"; then
+  AC_DEFINE(ENABLE_MODULE_ELLSQ, 1, [Define this symbol to enable the Elligator^2 module])
+fi
+
 if test x"$use_external_default_callbacks" = x"yes"; then
   AC_DEFINE(USE_EXTERNAL_DEFAULT_CALLBACKS, 1, [Define this symbol if an external implementation of the default callbacks is used])
 fi
@@ -347,6 +375,7 @@ if test x"$enable_experimental" = x"yes"; then
   AC_MSG_NOTICE([Experimental features do not have stable APIs or properties, and may not be safe for production use.])
   AC_MSG_NOTICE([Building extrakeys module: $enable_module_extrakeys])
   AC_MSG_NOTICE([Building schnorrsig module: $enable_module_schnorrsig])
+  AC_MSG_NOTICE([Building Elligator^2 module: $enable_module_ellsq])
   AC_MSG_NOTICE([******])
 else
   if test x"$enable_module_extrakeys" = x"yes"; then
@@ -354,6 +383,9 @@ else
   fi
   if test x"$enable_module_schnorrsig" = x"yes"; then
     AC_MSG_ERROR([schnorrsig module is experimental. Use --enable-experimental to allow.])
+  fi
+  if test x"$enable_module_ellsq" = x"yes"; then
+    AC_MSG_ERROR([Elligator^2 module is experimental. Use --enable-experimental to allow.])
   fi
   if test x"$set_asm" = x"arm"; then
     AC_MSG_ERROR([ARM assembly optimization is experimental. Use --enable-experimental to allow.])
@@ -379,8 +411,12 @@ AM_CONDITIONAL([ENABLE_MODULE_ECDH], [test x"$enable_module_ecdh" = x"yes"])
 AM_CONDITIONAL([ENABLE_MODULE_RECOVERY], [test x"$enable_module_recovery" = x"yes"])
 AM_CONDITIONAL([ENABLE_MODULE_EXTRAKEYS], [test x"$enable_module_extrakeys" = x"yes"])
 AM_CONDITIONAL([ENABLE_MODULE_SCHNORRSIG], [test x"$enable_module_schnorrsig" = x"yes"])
+AM_CONDITIONAL([ENABLE_MODULE_ELLSQ], [test x"$enable_module_ellsq" = x"yes"])
 AM_CONDITIONAL([USE_EXTERNAL_ASM], [test x"$use_external_asm" = x"yes"])
 AM_CONDITIONAL([USE_ASM_ARM], [test x"$set_asm" = x"arm"])
+AC_SUBST(LIB_VERSION_CURRENT, _LIB_VERSION_CURRENT)
+AC_SUBST(LIB_VERSION_REVISION, _LIB_VERSION_REVISION)
+AC_SUBST(LIB_VERSION_AGE, _LIB_VERSION_AGE)
 
 # Make sure nothing new is exported so that we don't break the cache.
 PKGCONFIG_PATH_TEMP="$PKG_CONFIG_PATH"
@@ -399,6 +435,7 @@ echo "  module ecdh             = $enable_module_ecdh"
 echo "  module recovery         = $enable_module_recovery"
 echo "  module extrakeys        = $enable_module_extrakeys"
 echo "  module schnorrsig       = $enable_module_schnorrsig"
+echo "  module ellsq            = $enable_module_ellsq"
 echo
 echo "  asm                     = $set_asm"
 echo "  ecmult window size      = $set_ecmult_window"
