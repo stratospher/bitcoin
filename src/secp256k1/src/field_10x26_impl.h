@@ -11,6 +11,15 @@
 #include "field.h"
 #include "modinv32_impl.h"
 
+/** See the comment at the top of field_5x52_impl.h for more details.
+ *
+ *  Here, we represent field elements as 10 uint32_t's in base 2^26, least significant first,
+ *  where limbs can contain >26 bits.
+ *  A magnitude M means:
+ *  - 2*M*(2^22-1) is the max (inclusive) of the most significant limb
+ *  - 2*M*(2^26-1) is the max (inclusive) of the remaining limbs
+ */
+
 #ifdef VERIFY
 static void secp256k1_fe_verify(const secp256k1_fe *a) {
     const uint32_t *d = a->n;
@@ -391,6 +400,10 @@ SECP256K1_INLINE static void secp256k1_fe_negate(secp256k1_fe *r, const secp256k
 #ifdef VERIFY
     VERIFY_CHECK(a->magnitude <= m);
     secp256k1_fe_verify(a);
+    VERIFY_CHECK(0x3FFFC2FUL * 2 * (m + 1) >= 0x3FFFFFFUL * 2 * m);
+    VERIFY_CHECK(0x3FFFFBFUL * 2 * (m + 1) >= 0x3FFFFFFUL * 2 * m);
+    VERIFY_CHECK(0x3FFFFFFUL * 2 * (m + 1) >= 0x3FFFFFFUL * 2 * m);
+    VERIFY_CHECK(0x03FFFFFUL * 2 * (m + 1) >= 0x03FFFFFUL * 2 * m);
 #endif
     r->n[0] = 0x3FFFC2FUL * 2 * (m + 1) - a->n[0];
     r->n[1] = 0x3FFFFBFUL * 2 * (m + 1) - a->n[1];
@@ -1253,6 +1266,34 @@ static void secp256k1_fe_inv_var(secp256k1_fe *r, const secp256k1_fe *x) {
     secp256k1_fe_from_signed30(r, &s);
 
     VERIFY_CHECK(secp256k1_fe_normalizes_to_zero(r) == secp256k1_fe_normalizes_to_zero(&tmp));
+}
+
+static int secp256k1_fe_jacobi_var(const secp256k1_fe *x) {
+    secp256k1_fe tmp;
+    secp256k1_modinv32_signed30 s;
+    int ret;
+
+    tmp = *x;
+    secp256k1_fe_normalize_var(&tmp);
+    secp256k1_fe_to_signed30(&s, &tmp);
+    ret = secp256k1_jacobi32_maybe_var(&s, &secp256k1_const_modinfo_fe);
+    if (ret == -2) {
+        /* secp256k1_jacobi32_maybe_var failed to compute the Jacobi symbol. Fall back
+         * to computing a square root. This should be extremely rare with random
+         * input. */
+        secp256k1_fe dummy;
+        ret = 2*secp256k1_fe_sqrt(&dummy, &tmp) - 1;
+#ifdef VERIFY
+    } else {
+        secp256k1_fe dummy;
+        if (secp256k1_fe_is_zero(&tmp)) {
+            VERIFY_CHECK(ret == 0);
+        } else {
+            VERIFY_CHECK(ret == 2*secp256k1_fe_sqrt(&dummy, &tmp) - 1);
+        }
+#endif
+    }
+    return ret;
 }
 
 #endif /* SECP256K1_FIELD_REPR_IMPL_H */
