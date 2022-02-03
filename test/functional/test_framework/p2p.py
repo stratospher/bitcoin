@@ -158,7 +158,7 @@ class P2PConnection(asyncio.Protocol):
     sub-classed and the on_message() callback overridden."""
 
     def __init__(self):
-        print("P2PConnection: __init__")
+        # print("P2PConnection: __init__")
         # import ipdb; ipdb.set_trace()
         # The underlying transport of the connection.
         # Should only call methods on this from the NetworkThread, c.f. call_soon_threadsafe
@@ -172,7 +172,7 @@ class P2PConnection(asyncio.Protocol):
         return self._transport is not None
 
     def peer_connect_helper(self, dstaddr, dstport, net, timeout_factor):
-        print("P2PConnection: peer_connect_helper")
+        # print("P2PConnection: peer_connect_helper")
         assert not self.is_connected
         self.timeout_factor = timeout_factor
         self.dstaddr = dstaddr
@@ -182,8 +182,8 @@ class P2PConnection(asyncio.Protocol):
         self.recvbuf = b""
         self.magic_bytes = MAGIC_BYTES[net]
 
-    def peer_connect(self, dstaddr, dstport, *, net, timeout_factor, support_v2_p2p=False, initiating=False):
-        print("P2PConnection: peer_connect")
+    def peer_connect(self, dstaddr, dstport, *, net, timeout_factor, support_v2_p2p=False, initiating=False): # TODO: The initiating param is not needed
+        # print("P2PConnection: peer_connect")
         if support_v2_p2p:
             self.support_v2_p2p = True
             self.v2_conn = V2P2PEncryption(initiating=initiating)
@@ -195,7 +195,7 @@ class P2PConnection(asyncio.Protocol):
         return lambda: loop.call_soon_threadsafe(loop.create_task, coroutine)
 
     def peer_accept_connection(self, connect_id, connect_cb=lambda: None, *, net, timeout_factor, support_v2_p2p=False, initiating=False):
-        print("P2PConnection: peer_accept_connection")
+        # print("P2PConnection: peer_accept_connection")
         # TODO: only an outbound connection(is not initiating) would call this function
         if support_v2_p2p:
             self.support_v2_p2p = True
@@ -207,7 +207,7 @@ class P2PConnection(asyncio.Protocol):
 
     def peer_disconnect(self):
         # Connection could have already been closed by other end.
-        print("P2PConnection: peer_disconnect")
+        # print("P2PConnection: peer_disconnect")
         NetworkThread.network_event_loop.call_soon_threadsafe(lambda: self._transport and self._transport.abort())
 
     # Connection and disconnection methods
@@ -217,18 +217,14 @@ class P2PConnection(asyncio.Protocol):
 
     def connection_made(self, transport):
         """asyncio callback when a connection is opened."""
-        print("P2PConnection: connection_made")
+        # print("P2PConnection: connection_made")
         assert not self._transport
         logger.debug("Connected & Listening: %s:%d" % (self.dstaddr, self.dstport))
         self._transport = transport
-        if self.support_v2_p2p and self.v2_conn.initiating and not self.v2_conn.tried_v2_handshake:
-            print("initiator start handshake")
-            initiator_hdata = self.v2_conn.initiate_v2_handshake()
-            self.send_raw_message(initiator_hdata)
-            # self.wait_until(lambda: self._on_data(), timeout=60)
-        # self.wait_until(lambda: not self.support_v2_p2p or self.v2_conn.tried_v2_handshake, timeout=60)
-
-        # TODO: Complete v2 handshake before proceeding
+        if self.support_v2_p2p and not self.v2_conn.tried_v2_handshake:
+            if self.v2_conn.initiating:
+                initiator_hdata = self.v2_conn.initiate_v2_handshake()
+                self.send_raw_message(initiator_hdata)
 
         if self.on_connection_send_msg:
             if self.support_v2_p2p:
@@ -241,7 +237,7 @@ class P2PConnection(asyncio.Protocol):
         self.on_open()
 
     def connection_lost(self, exc):
-        print("P2PConnection: connection_lost")
+        # print("P2PConnection: connection_lost")
         """asyncio callback when a connection is closed."""
         if exc:
             logger.warning("Connection lost to {}:{} due to {}".format(self.dstaddr, self.dstport, exc))
@@ -254,91 +250,84 @@ class P2PConnection(asyncio.Protocol):
     # Socket read methods
 
     def data_received(self, t):
-        print("P2PConnection: data_received")
+        # print("P2PConnection: data_received")
         """asyncio callback when data is read from the socket."""
         if len(t) > 0:
             self.recvbuf += t
-            print("len(Data_Received) is",len(self.recvbuf))
-            print("data_received: self.recvbuf is",self.recvbuf.hex())
             self._on_data()
 
+    def v2_initiator_handshake(self):
+        #  TestNode(Responder) <----inbound connection------ P2P Connection(Initiator)
+        if len(self.recvbuf) < 4:
+            return
+        if self.recvbuf[:4] == self.magic_bytes:
+            self.support_v2_p2p = False
+            self.peer_disconnect() # TODO: Is this right? check later
+            return
+        if len(self.recvbuf) < 64:
+            return
+        response = self.recvbuf[:64] # TODO: Output from respond_v2_handshake() with no transport version currently
+        self.v2_conn.initiator_complete_handshake(response)
+        # then TestNode will do responder_complete_handshake()
+        self.v2_conn.tried_v2_handshake = True
+        self.recvbuf = self.recvbuf[64:]
+        while self.queue_messages:
+            message = self.queue_messages.pop(0)
+            self.send_message(message)
+        return
+
+    def v2_responder_handshake(self):
+        #  TestNode(Initiator) ----outbound connection-----> P2P Connection(Responder)
+        if len(self.recvbuf) < 4:
+            return
+        if self.recvbuf[:4] == self.magic_bytes: # this means initiator TestNode is v1
+            self.support_v2_p2p = False
+            # we need to proceed to normal v1 handling. go below.
+        elif len(self.recvbuf) < 64:
+            return
+        else:
+            # we get the 64 bytes INITIATOR_HDATA
+            print("received initiator_hdata")
+            initiator_hdata = self.recvbuf[:64]
+            response = self.v2_conn.respond_v2_handshake(initiator_hdata)
+            self.send_raw_message(response)
+            # TODO: Later
+            # node will then send initiator_complete_handshake(response)
+            # we need to do responder_complete_handshake(msg)
+            self.v2_conn.tried_v2_handshake = True
+            self.recvbuf =  self.recvbuf[64:]
+            return
+
     def _on_data(self):
-        print("P2PConnection: _on_data")
+        # print("P2PConnection: _on_data")
         """Try to read P2P messages from the recv buffer.
 
         This method reads data from the buffer in a loop. It deserializes,
         parses and verifies the P2P header, then passes the P2P payload to
         the on_message callback for processing."""
         try:
-            i =0
             while True:
                 if self.support_v2_p2p:
                     if not self.v2_conn.tried_v2_handshake:
-                        # V2 Handshake happens here
                         if self.v2_conn.initiating:
-                            #  TestNode(Responder) <----inbound connection------ P2P Connection(Initiator)
-                            if len(self.recvbuf) < 4:
-                                return
-                            if self.recvbuf[:4] == self.magic_bytes:
-                                print("ok..bad")
-                                self.support_v2_p2p = False
-                                self.peer_disconnect() # TODO: Is this right? check later
-                                return
-                            if len(self.recvbuf) < 64:
-                                return
-                            # TODO: So we're basically accepting all inputs with size > 64
-                            # We're also discarding self.recvbuf[64:]
-                            # is this ok?
-                            response = self.recvbuf[:64] # TODO: Output from respond_v2_handshake() with no transport version currently
-                            self.v2_conn.initiator_complete_handshake(response)
-                            # then TestNode will do responder_complete_handshake()
-                            self.v2_conn.tried_v2_handshake = True
-                            self.recvbuf =  self.recvbuf[64:]
-                            print("self.recvbuf is",self.recvbuf)
-                            while self.queue_messages:
-                                message = self.queue_messages.pop(0)
-                                self.send_message(message)
+                            self.v2_initiator_handshake()
                             return
                         else:
-                            #  TestNode(Initiator) ----outbound connection-----> P2P Connection(Responder)
-                            if len(self.recvbuf) < 4:
-                                return
-                            if self.recvbuf[:4] == self.magic_bytes: # this means initiator TestNode is v1
-                                self.support_v2_p2p = False
-                                # we need to proceed to normal v1 handling. go below.
-                            elif len(self.recvbuf) < 64:
-                                return
-                            else:
-                                # we get the 64 bytes INITIATOR_HDATA
-                                initiator_hdata = self.recvbuf[:64]
-                                response = self.v2_conn.respond_v2_handshake(initiator_hdata)
-                                self.send_raw_message(response)
-                                # TODO: Later
-                                # node will then send initiator_complete_handshake(response)
-                                # we need to do responder_complete_handshake(msg)
-                                self.v2_conn.tried_v2_handshake = True
-                                self.recvbuf =  self.recvbuf[64:]
+                            self.v2_responder_handshake()
+                            if self.support_v2_p2p:
                                 return
                     else:
                         # V2 Messages need to be read here
                         # TODO: Maybe check min self.recvbuf length
                         # but it's anyways managed by v2_dec_msg
-                        i+=1
-                        print("i is ",i)
-                        print("len(self.recvbuf) is", len(self.recvbuf))
-                        print("v2 message is being dec here")
                         if len(self.recvbuf)<3+16:
                             return
-                        ret = self.v2_conn.v2_dec_msg(self.recvbuf) # v2_conn will read from recv buffer
-                        print("ret is",ret.hex())
-                        print("len(ret) is",len(ret))
-                        if ret is None: # hmmm???
-                            return  # or break?
+                        ret = self.v2_conn.v2_dec_msg(self.recvbuf)
+                        if ret is None:
+                            return
                         # TODO: check ret type and modify below for bytes
                         msg = ret
-                        print("msg",msg)
-                        print("msg.hex()",msg.hex())
-                        size_or_shortid = msg[0] # TODO: Is this correct?
+                        size_or_shortid = msg[0]
                         if 0 < size_or_shortid <= 12:
                             # a string command
                             msgtype = msg[1:1+size_or_shortid]
@@ -351,10 +340,8 @@ class P2PConnection(asyncio.Protocol):
                             else:
                                 msgtype = "unknown-" + str(msg[1])
                         f = BytesIO(payload)
-                        print("self.recvbuf",self.recvbuf)
                         self.recvbuf = self.recvbuf[3+len(ret)+16:]
-                        print("self.recvbuf",self.recvbuf)
-                        
+
                 if not self.support_v2_p2p: # not using an "else" here so that if v2 doesn't work out, normal v1 handling can be done
                     # does not support v2 P2P Connection
                     if len(self.recvbuf) < 4:
@@ -397,15 +384,16 @@ class P2PConnection(asyncio.Protocol):
 
         This method takes a P2P payload, builds the P2P header and adds
         the message to the send buffer to be sent over the socket."""
-        print("P2PConnection: send_message")
-        print("message is",message)
+        # import pdb; pdb.set_trace()
+        # print("P2PConnection: send_message")
+        # print("message is",message)
         tmsg = self.build_message(message)
-        print("tmsg is",tmsg)
+        # print("tmsg is",tmsg)
         self._log_message("send", message)
         return self.send_raw_message(tmsg)
 
     def send_raw_message(self, raw_message_bytes):
-        print("P2PConnection: send_Raw_message")
+        # print("P2PConnection: send_Raw_message")
         if not self.is_connected:
             raise IOError('Not connected')
 
@@ -420,10 +408,10 @@ class P2PConnection(asyncio.Protocol):
     # Class utility methods
 
     def build_message(self, message):
-        print("P2PConnection: build_message")
+        # print("P2PConnection: build_message")
         """Build a serialized P2P message"""
         if self.support_v2_p2p:
-            print("this")
+            # print("this")
             msgtype = message.msgtype
             data = message.serialize()
             # assert len(data)>=0 and len(data)<2**24 TODO:this is anyways handled inside AEAD. maybe remove?
@@ -433,7 +421,7 @@ class P2PConnection(asyncio.Protocol):
                 tmsg=len(msgtype).to_bytes(1, 'big') #foobasr
                 tmsg+=bytes(msgtype, 'ascii')
             tmsg += data
-            print("before formatting",tmsg)
+            # print("before formatting",tmsg)
             # Need to return (3 bytes length + encrypted payload + MAC tag)
             ret = self.v2_conn.v2_enc_msg(tmsg)
             return ret
@@ -472,7 +460,7 @@ class P2PInterface(P2PConnection):
     Individual testcases should subclass this and override the on_* methods
     if they want to alter message handling behaviour."""
     def __init__(self, support_addrv2=False, wtxidrelay=True):
-        print("P2PInterface: __init__")
+        # print("P2PInterface: __init__")
         super().__init__()
 
         # Track number of messages of each type received.
@@ -497,8 +485,8 @@ class P2PInterface(P2PConnection):
 
     def peer_connect_send_version(self, services):
         # Send a version msg
-        print("P2PInterface: peer_connect_send_version")
-        print("services is", services)
+        # print("P2PInterface: peer_connect_send_version")
+        # print("services is", services)
         vt = msg_version()
         vt.nVersion = P2P_VERSION
         vt.strSubVer = P2P_SUBVERSION
@@ -511,26 +499,18 @@ class P2PInterface(P2PConnection):
         self.on_connection_send_msg = vt  # Will be sent in connection_made callback
 
     def peer_connect(self, *args, services=P2P_SERVICES, send_version=True, **kwargs):
-        print("P2PInterface: peer connect")
+        # print("P2PInterface: peer connect")
         create_conn = super().peer_connect(*args, **kwargs)
 
-        # TODO: I think the problem is here
-        # our P2PInterface is sending version even before the handshake
-        if kwargs.get('support_v2_p2p'):
-            services = services | NODE_P2P_V2
         if send_version:
             self.peer_connect_send_version(services)
 
-        # TODO: The above statement has set  self.on_connection_send_msg which will be
-        # sent in connection_made callback to version
         return create_conn
 
     def peer_accept_connection(self, *args, services=P2P_SERVICES, **kwargs):
         # import ipdb; ipdb.set_trace()
-        print("P2PInterface: peer_accept_connection")
+        # print("P2PInterface: peer_accept_connection")
         create_conn = super().peer_accept_connection(*args, **kwargs)
-        if kwargs.get('support_v2_p2p'):
-            services = services | NODE_P2P_V2
         self.peer_connect_send_version(services)
 
         return create_conn
@@ -538,7 +518,7 @@ class P2PInterface(P2PConnection):
     # Message receiving methods
 
     def on_message(self, message):
-        print("P2PInterface: on_message")
+        # print("P2PInterface: on_message")
         """Receive message and dispatch message to appropriate callback.
 
         We keep a count of how many of each message type has been received
@@ -557,7 +537,7 @@ class P2PInterface(P2PConnection):
     # cases to provide custom message handling behaviour.
 
     def on_open(self):
-        print("P2PInterface: on_open")
+        # print("P2PInterface: on_open")
         pass
 
     def on_close(self):
@@ -606,8 +586,13 @@ class P2PInterface(P2PConnection):
         pass
 
     def on_version(self, message):
-        print("P2PInterface: on_version")
+        # print("P2PInterface: on_version")
         assert message.nVersion >= MIN_P2P_VERSION_SUPPORTED, "Version {} received. Test framework only supports versions greater than {}".format(message.nVersion, MIN_P2P_VERSION_SUPPORTED)
+        if self.support_v2_p2p: # TODO: Prettier way exists?
+            while self.queue_messages:
+                message = self.queue_messages.pop(0)
+                print("sending message", message)
+                self.send_message(message)
         if message.nVersion >= 70016 and self.wtxidrelay:
             self.send_message(msg_wtxidrelay())
         if self.support_addrv2:
@@ -704,7 +689,13 @@ class P2PInterface(P2PConnection):
 
         self.wait_until(test_function, timeout=timeout)
 
-    def wait_for_verack(self, timeout=6000): # todo: remove
+    def wait_for_version(self, timeout=60): # TODO: Is this needed
+        def test_function():
+            return "version" in self.last_message
+
+        self.wait_until(test_function, timeout=timeout)
+
+    def wait_for_verack(self, timeout=60):
         def test_function():
             return "verack" in self.last_message
 
