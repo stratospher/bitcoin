@@ -24,7 +24,8 @@ from pathlib import Path
 
 from .authproxy import JSONRPCException
 from .descriptors import descsum_create
-from .p2p import P2P_SUBVERSION
+from .messages import NODE_P2P_V2
+from .p2p import P2P_SUBVERSION, P2P_SERVICES
 from .util import (
     MAX_NODES,
     assert_equal,
@@ -71,7 +72,6 @@ class TestNode():
             start_perf (bool): If True, begin profiling the node with `perf` as soon as
                 the node starts.
         """
-
         self.index = i
         self.p2p_conn_index = 1
         self.datadir = datadir
@@ -92,8 +92,6 @@ class TestNode():
         # Note that common args are set in the config file (see initialize_datadir)
         self.extra_args = extra_args
         self.is_p2p_v2 = False
-        if "-v2transport=1" in self.extra_args:
-            self.is_p2p_v2 = True
         self.version = version
         # Configuration for logging is set as command-line args rather than in the bitcoin.conf file.
         # This means that starting a bitcoind using the temp dir to debug a failed test won't
@@ -191,6 +189,10 @@ class TestNode():
         """Start the node."""
         if extra_args is None:
             extra_args = self.extra_args
+        if "-v2transport=1" in extra_args:
+            self.is_p2p_v2 = True
+        else:
+            self.is_p2p_v2 = False
 
         # Add a new stdout and stderr file each time bitcoind is started
         if stderr is None:
@@ -545,7 +547,7 @@ class TestNode():
                 self._raise_assertion_error(assert_msg)
 
     def add_p2p_connection(self, p2p_conn, *, wait_for_verack=True, support_v2_p2p=False, **kwargs):
-        print("TestNode: add_p2p_connection")
+        # print("TestNode: add_p2p_connection")
         """Add an inbound p2p connection to the node.
 
         This method adds the p2p connection to the self.p2ps list and also
@@ -555,18 +557,17 @@ class TestNode():
         if 'dstaddr' not in kwargs:
             kwargs['dstaddr'] = '127.0.0.1'
 
-        if self.is_p2p_v2:
-            print("TestNode: is_p2p_v2",self.is_p2p_v2)
-            p2p_conn.peer_connect(**kwargs, net=self.chain, timeout_factor=self.timeout_factor, support_v2_p2p=support_v2_p2p, initiating=True)() ###@@TODO: pass   services | NODE_P2P_V2
+        if support_v2_p2p:#self.is_p2p_v2 and support_v2_p2p:
+            p2p_conn.peer_connect(**kwargs, services=P2P_SERVICES|NODE_P2P_V2, net=self.chain, timeout_factor=self.timeout_factor, support_v2_p2p=support_v2_p2p, initiating=True)()
         else:
             p2p_conn.peer_connect(**kwargs, net=self.chain, timeout_factor=self.timeout_factor)()
         self.p2ps.append(p2p_conn)
         p2p_conn.wait_until(lambda: p2p_conn.is_connected, check_connected=False)
         if wait_for_verack:
-            print("TestNode: waiting for verack")
+            # print("TestNode: waiting for verack")
             # Wait for the node to send us the version and verack
             p2p_conn.wait_for_verack()
-            print("TestNode: waiting for verack over")
+            # print("TestNode: waiting for verack over")
             # At this point we have sent our version message and received the version and verack, however the full node
             # has not yet received the verack from us (in reply to their version). So, the connection is not yet fully
             # established (fSuccessfullyConnected).
@@ -596,25 +597,28 @@ class TestNode():
 
         def addconnection_callback(address, port):
             self.log.debug("Connecting to %s:%d %s" % (address, port, connection_type))
-            self.addconnection('%s:%d' % (address, port), connection_type)
+            if self.is_p2p_v2 and support_v2_p2p:
+                self.addconnection('%s:%d' % (address, port), connection_type, True)
+            else:
+                self.addconnection('%s:%d' % (address, port), connection_type)
 
+        print("self.is_p2p_v2",self.is_p2p_v2)
+        print("support_v2_p2p",support_v2_p2p)
         #  Here, TestNode(INITIATOR) -----------outbound P2PConn---------->  RESPONDER
-        if self.is_p2p_v2:
-            p2p_conn.peer_accept_connection(connect_cb=addconnection_callback, connect_id=p2p_idx + 1, net=self.chain, timeout_factor=self.timeout_factor, support_v2_p2p=support_v2_p2p, initiating=False, **kwargs)()
+        if self.is_p2p_v2 and support_v2_p2p:
+            p2p_conn.peer_accept_connection(connect_cb=addconnection_callback, connect_id=p2p_idx + 1, services=P2P_SERVICES|NODE_P2P_V2, net=self.chain, timeout_factor=self.timeout_factor, support_v2_p2p=support_v2_p2p, initiating=False, **kwargs)()
         else:
             p2p_conn.peer_accept_connection(connect_cb=addconnection_callback, connect_id=p2p_idx + 1, net=self.chain, timeout_factor=self.timeout_factor, **kwargs)()
 
-        if connection_type == "feeler": # TODO: Later check if feeler connections require special handling
+        if connection_type == "feeler":
             # feeler connections are closed as soon as the node receives a `version` message
             p2p_conn.wait_until(lambda: p2p_conn.message_count["version"] == 1, check_connected=False)
             p2p_conn.wait_until(lambda: not p2p_conn.is_connected, check_connected=False)
         else:
             p2p_conn.wait_for_connect()
             self.p2ps.append(p2p_conn)
-            print("waiting for verack")
             p2p_conn.wait_for_verack()
             p2p_conn.sync_with_ping()
-        print("add outbound_over")
         return p2p_conn
 
     def num_test_p2p_connections(self):
