@@ -1,7 +1,9 @@
 // Copyright (c) 2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-
+#include <iostream>
+//#include <logging.h>
+#include <util/strencodings.h>
 #include <crypto/chacha_poly_aead.h>
 
 #include <crypto/common.h>
@@ -41,9 +43,11 @@ ChaCha20Forward4064::ChaCha20Forward4064(const unsigned char* key, size_t keylen
 void ChaCha20Forward4064::Crypt(const unsigned char* input, unsigned char* output, size_t bytes)
 {
     size_t message_pos = 0;
-
+    std::cout<<"Inside ChaCha20Forward4064::Crypt bytes = "<<bytes;
+    std::string s = HexStr(m_keystream); //this i need
     // TODO: speedup with a block approach (rather then looping over every byte)
     while (bytes > message_pos) {
+        //TODO: Print keystream here
         output[message_pos] = input[message_pos] ^ m_keystream[m_keystream_pos];
         m_keystream_pos++;
         message_pos++;
@@ -83,6 +87,7 @@ bool ChaCha20Poly1305AEAD::Crypt(unsigned char* dest, size_t dest_len /* length 
         (is_encrypt && (src_len < CHACHA20_POLY1305_AEAD_AAD_LEN || dest_len < src_len + POLY1305_TAGLEN)) ||
         // if we decrypt, make sure the source contains at least the expected AAD+MAC and the destination has at least space for the source - MAC
         (!is_encrypt && (src_len < CHACHA20_POLY1305_AEAD_AAD_LEN + POLY1305_TAGLEN || dest_len < src_len - POLY1305_TAGLEN))) {
+        std::cout<<"buffer boundary - crypt fail\n";
         return false;
     }
 
@@ -91,21 +96,57 @@ bool ChaCha20Poly1305AEAD::Crypt(unsigned char* dest, size_t dest_len /* length 
 
     // 1. AAD (the encrypted packet length), use the header-keystream
     if (is_encrypt) {
+        std::string src_str;
+        std::string dest_str;
+        for(int i=0;i<3;i++){
+            src_str+=src[i];
+        }
+        std::string src_str_final = HexStr(src_str);
+
         m_chacha_header.Crypt(src, dest, 3);
+
+        for(int i=0;i<3;i++){
+            dest_str+=dest[i];
+        }
+        std::string dest_str_final = HexStr(dest_str);
+
+        std::string s3;
+        for(int i=0;i<src_len;i++){
+            s3 += src[i];
+        }
+        std::string s3_final = HexStr(s3); //this i need
+        std::string s3_final_2="hi";
+
+        std::string dest_str_final_2 = "gi";
     } else {
         // we must use ChaCha20Poly1305AEAD::DecryptLength before calling ChaCha20Poly1305AEAD::Crypt
         // thus the length has already been decrypted, avoid doing it again and messing up the keystream position
         // keep the encrypted version of the AAD to not break verifying the MAC
         memcpy(dest, src, 3);
+        std::cout<<"done with memcpy\n";
     }
 
     // 2. derive the poly1305 key from the header-keystream
     m_chacha_header.Crypt(poly_key, poly_key, sizeof(poly_key));
+    std::string s1;
+    for(int i=0;i<sizeof(poly_key);i++){
+        s1+=poly_key[i];
+    }
+    std::string d3=HexStr(s1); //this i need
 
     // 3. if decrypting, verify the MAC prior to decryption
     if (!is_encrypt) {
         const unsigned char* tag = src + src_len - POLY1305_TAGLEN;            //the MAC appended in the package
         poly1305_auth(expected_tag, src, src_len - POLY1305_TAGLEN, poly_key); //the calculated MAC
+        std::string s2;
+        std::string s3;
+        for(int i=0;i<POLY1305_TAGLEN;i++){
+            s2 +=tag[i];
+            s3 +=expected_tag[i];
+        }
+
+        std::cout<<"mac tag prior to decryption: obtained tag is"<<s2<<"\n";
+        std::cout<<"mac tag prior to decryption: expected tag is"<<s3<<"\n";
 
         // constant time compare the calculated MAC with the provided MAC
         if (timingsafe_bcmp(expected_tag, tag, POLY1305_TAGLEN) != 0) {
@@ -125,6 +166,12 @@ bool ChaCha20Poly1305AEAD::Crypt(unsigned char* dest, size_t dest_len /* length 
     if (is_encrypt) {
         // the poly1305 MAC expands over the AAD (3 bytes length) & encrypted payload
         poly1305_auth(dest + src_len, dest, src_len, poly_key);
+        std::string s3;
+        for(int i=0;i<dest_len+16;i++){
+            s3 += dest[i];
+        }
+        std::string s3_final = HexStr(s3); //this i need
+        std::string s3_final_2="hi";
     }
 
     // cleanse no longer required polykey
