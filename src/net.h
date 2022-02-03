@@ -766,8 +766,15 @@ public:
 
     void InitV2P2P(const CPubKey& peer_pubkey, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, bool initiating) {
         ECDHSecret ecdh_secret;
+        std::cout<<"in cpp #### v2_priv_key is:"<<HexStr(v2_priv_key)<<"\n";
+        LogPrintf("#### v2_priv_key: %s\n", HexStr(v2_priv_key));
+
+        std::cout<<"in cpp #### peer_pubkey: "<<HexStr(peer_pubkey)<<"\n";
+        LogPrintf("#### peer_pubkey: %s\n", HexStr(peer_pubkey));
+
         v2_priv_key.ComputeECDHSecret(peer_pubkey, ecdh_secret);
         LogPrintf("#### ECDH Secret: %s\n", HexStr(ecdh_secret));
+        std::cout<<"in cpp #### ECDH Secret:"<<HexStr(ecdh_secret)<<"\n";
 
         // TODO:: I WAS HERE.
         BIP324Keys v2_keys;
@@ -800,6 +807,8 @@ public:
 
             std::array<uint8_t, 32> rnd32;
             GetRandBytes(rnd32.data(), 32);
+            LogPrintf("########PUB KEY: %s\n", HexStr(v2_priv_key.GetPubKey()));
+            std::cout<<"########PUB KEY:"<<HexStr(v2_priv_key.GetPubKey())<<"\n";
             hdata_ellsq_pubkey = v2_priv_key.GetPubKey().EllSqEncode(rnd32).value();
         }
     }
@@ -1036,7 +1045,7 @@ public:
      *                          - Max total outbound connection capacity filled
      *                          - Max connection capacity for type is filled
      */
-    bool AddConnection(const std::string& address, ConnectionType conn_type);
+    bool AddConnection(const std::string& address, ConnectionType conn_type, const bool use_p2p_v2);
 
     size_t GetNodeCount(ConnectionDirection) const;
     void GetNodeStats(std::vector<CNodeStats>& vstats) const;

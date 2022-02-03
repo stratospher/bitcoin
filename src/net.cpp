@@ -6,7 +6,7 @@
 #if defined(HAVE_CONFIG_H)
 #include <config/bitcoin-config.h>
 #endif
-
+#include <iostream>
 #include <net.h>
 
 #include <addrdb.h>
@@ -670,6 +670,8 @@ void CNode::CopyStats(CNodeStats& stats)
 
 bool CNode::ReceiveMsgBytes(Span<const uint8_t> msg_bytes, bool& complete)
 {
+    std::cout<<"inside ReceiveMsgBytes\n";
+    LogPrint(BCLog::NET, "inside ReceiveMsgBytes\n");
     complete = false;
     const auto time = GetTime<std::chrono::microseconds>();
     LOCK(cs_vRecv);
@@ -677,24 +679,36 @@ bool CNode::ReceiveMsgBytes(Span<const uint8_t> msg_bytes, bool& complete)
     nRecvBytes += msg_bytes.size();
     while (msg_bytes.size() > 0) {
         // absorb network data
+        std::cout<<"Inside msg_bytes.size() > 0\n";
+        LogPrint(BCLog::NET, "Inside msg_bytes.size() > 0\n");
         int handled = m_deserializer->Read(msg_bytes);
+        std::cout<<"handled = "<<handled<<"\n";
+        LogPrint(BCLog::NET, "handled = %d\n",handled);
         if (handled < 0) {
             // Serious header problem, disconnect from the peer.
+            std::cout<<"Serious header problem\n";
+            LogPrint(BCLog::NET, "Serious header problem\n");
             return false;
         }
 
         if (m_deserializer->Complete()) {
+            std::cout<<"Inside m_deserializer->Complete()\n";
+            LogPrint(BCLog::NET, "Inside m_deserializer->Complete()\n");
             // decompose a transport agnostic CNetMessage from the deserializer
             bool reject_message{false};
             bool disconnect{false};
             CNetMessage msg = m_deserializer->GetMessage(time, reject_message, disconnect);
 
             if (disconnect) {
+                std::cout<<"inside disconnect\n";
+                LogPrint(BCLog::NET, "inside disconnect\n");
                 // v2 p2p incorrect MAC tag. Disconnect from peer.
                 return false;
             }
 
             if (reject_message) {
+                std::cout<<"inside reject message\n";
+                LogPrint(BCLog::NET, "inside reject message\n");
                 // Message deserialization failed.  Drop the message but don't disconnect the peer.
                 // store the size of the corrupt message
                 mapRecvBytesPerMsgCmd.at(NET_MESSAGE_COMMAND_OTHER) += msg.m_raw_message_size;
@@ -705,15 +719,18 @@ bool CNode::ReceiveMsgBytes(Span<const uint8_t> msg_bytes, bool& complete)
             // to prevent a memory DOS, only allow valid commands
             auto i = mapRecvBytesPerMsgCmd.find(msg.m_command);
             if (i == mapRecvBytesPerMsgCmd.end()) {
+                LogPrint(BCLog::NET, "stored as NET_MESSAGE_COMMAND_OTHER\n");
                 i = mapRecvBytesPerMsgCmd.find(NET_MESSAGE_COMMAND_OTHER);
             }
+            LogPrint(BCLog::NET, "msg.m_command is %s\n",msg.m_command);
             assert(i != mapRecvBytesPerMsgCmd.end());
             i->second += msg.m_raw_message_size;
-
+            LogPrint(BCLog::NET, "msg.m_raw_message_size is %s\n",msg.m_raw_message_size);
             // push the message to the process queue,
             vRecvMsg.push_back(std::move(msg));
 
             complete = true;
+            LogPrint(BCLog::NET, "complete is %d\n",complete);
         }
     }
 
@@ -873,6 +890,7 @@ int V2TransportDeserializer::readData(Span<const uint8_t> msg_bytes)
 
 CNetMessage V2TransportDeserializer::GetMessage(const std::chrono::microseconds time, bool& reject_message, bool& disconnect)
 {
+    LogPrint(BCLog::NET, "Inside V2TransportDeserializer::GetMessage\n"); //remove these
     // Initialize out parameters
     reject_message = false;
     disconnect = false;
@@ -1425,7 +1443,7 @@ void CConnman::CreateNodeFromAcceptedSocket(SOCKET hSocket,
     RandAddEvent((uint32_t)id);
 }
 
-bool CConnman::AddConnection(const std::string& address, ConnectionType conn_type)
+bool CConnman::AddConnection(const std::string& address, ConnectionType conn_type, const bool use_p2p_v2)
 {
     std::optional<int> max_connections;
     switch (conn_type) {
@@ -1457,7 +1475,11 @@ bool CConnman::AddConnection(const std::string& address, ConnectionType conn_typ
     CSemaphoreGrant grant(*semOutbound, true);
     if (!grant) return false;
 
-    OpenNetworkConnection(CAddress(), false, &grant, address.c_str(), conn_type);
+    CAddress addr(CService(), NODE_NONE);
+    if (use_p2p_v2) {
+        addr.nServices = ServiceFlags(addr.nServices | NODE_P2P_V2);
+    }
+    OpenNetworkConnection(addr, false, &grant, address.c_str(), conn_type);
     return true;
 }
 
@@ -1802,11 +1824,16 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
 
                 if (!pnode->m_deserializer ||
                     !pnode->ReceiveMsgBytes({pchBuf, (size_t)nBytes}, notify)) {
+                    std::cout<<"pass if 1\n";
+                    std::cout<<"pnode->tried_v2_handshake"<<pnode->tried_v2_handshake<<"\n";
+                    std::cout<<"nBytes="<<nBytes<<"\n";
                     if (!pnode->tried_v2_handshake && nBytes == ELLSQ_ENCODED_SIZE) {
+                        std::cout<<"pass if 2\n";
                         pnode->EnsureInitV2Key(!pnode->IsInboundConn());
                         EllSqPubKey peer_ellsq;
                         std::copy(pchBuf, pchBuf + ELLSQ_ENCODED_SIZE, peer_ellsq.data());
                         LogPrintf("#### Peer pubkey ellsq: %s\n", HexStr(peer_ellsq));
+                        std::cout<<"in cpp #### Peer pubkey ellsq:"<<HexStr(peer_ellsq)<<"\n";
                         CPubKey v2_peer_pubkey = CPubKey(peer_ellsq);
 
                         // TODO: Add version messages to the handshake data
