@@ -67,7 +67,7 @@ class ChaCha20Poly1305AEAD:
         self.keystream_V = next(self.keystream_V_obj)
 
     def AEAD(self, is_encrypt, crypt_bytes, set_ignore=False):
-        print("self.keystream_F",self.keystream_F.hex())
+        # print("self.keystream_F",self.keystream_F.hex())
         ret = b""
         ignore = False
         disconnect = False
@@ -91,9 +91,9 @@ class ChaCha20Poly1305AEAD:
                 header = header | (1 << 23)
             ret += bytes([aa ^ bb for aa, bb in zip(header.to_bytes(3, byteorder="little"), self.keystream_F[self.pos_F:(self.pos_F + HEADER_LEN)])])
         else:
-            print("pos_F",self.pos_F)
-            print("crypt_bytes[:HEADER_LEN] is",crypt_bytes[:HEADER_LEN].hex())
-            print("keystream_F[:HEADER_LEN] is",self.keystream_F[self.pos_F:self.pos_F+HEADER_LEN].hex())
+            # print("pos_F",self.pos_F)
+            # print("crypt_bytes[:HEADER_LEN] is",crypt_bytes[:HEADER_LEN].hex())
+            # print("keystream_F[:HEADER_LEN] is",self.keystream_F[self.pos_F:self.pos_F+HEADER_LEN].hex())
             header = bitwise_xor_le24toh(crypt_bytes[:HEADER_LEN], self.keystream_F[self.pos_F:self.pos_F+HEADER_LEN])
             ignore = bitwise_and(header, 1<<23) != 0
             payload_len = bitwise_and(header, ~(1<<23))
@@ -101,17 +101,17 @@ class ChaCha20Poly1305AEAD:
 
         poly1305_key = self.keystream_F[self.pos_F:(self.pos_F + POLY1305_KEYLEN)]
         self.pos_F += POLY1305_KEYLEN
-        print("update pos_F",self.pos_F)
+        # print("update pos_F",self.pos_F)
         if is_encrypt:
             ret += bytes([aa ^ bb for aa, bb in zip(crypt_bytes, self.keystream_V[self.pos_V:(self.pos_V + len(crypt_bytes))])])
             self.pos_V += len(crypt_bytes)
             ret += Poly1305(poly1305_key).create_tag(ret)
         else:
-            # print("keystream_F is",keystream_F.hex())
-            print("len(crypt_bytes)",len(crypt_bytes))
-            print('payload_len',payload_len)
-            print("HEADER_LEN + payload_len",HEADER_LEN + payload_len)
-            print("crypt_bytes[(HEADER_LEN + payload_len):]",crypt_bytes[(HEADER_LEN + payload_len):(HEADER_LEN + payload_len + MAC_TAGLEN)].hex())
+            # # print("keystream_F is",keystream_F.hex())
+            # print("len(crypt_bytes)",len(crypt_bytes))
+            # print('payload_len',payload_len)
+            # print("HEADER_LEN + payload_len",HEADER_LEN + payload_len)
+            # print("crypt_bytes[(HEADER_LEN + payload_len):]",crypt_bytes[(HEADER_LEN + payload_len):(HEADER_LEN + payload_len + MAC_TAGLEN)].hex())
             if (Poly1305(poly1305_key).create_tag(crypt_bytes[:(HEADER_LEN + payload_len)]) != crypt_bytes[(HEADER_LEN + payload_len):(HEADER_LEN + payload_len+MAC_TAGLEN)]):
                 disconnect = True
 
