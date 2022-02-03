@@ -53,7 +53,7 @@ class V2P2PEncryption:
     A class with useful functions to establish a V2 P2P Encrypted Connection
     """
     def __init__(self, **kwargs):
-        print("V2P2PEncryption: __init__")
+        # print("V2P2PEncryption: __init__")
         self.initiating = kwargs['initiating']
         self.enc_aead = None
         self.dec_aead = None
@@ -73,7 +73,7 @@ class V2P2PEncryption:
     # TODO: Do we need self
     # TODO: Do we need to save these keys
     def v2_keygen(self):
-        print("V2P2PEncryption: v2_keygen")
+        # print("V2P2PEncryption: v2_keygen")
         priv = ECKey() # TODO: Maybe should use get_deterministic_priv_key()?
         priv.generate()
         pub = priv.get_pubkey()
@@ -98,7 +98,7 @@ class V2P2PEncryption:
         Here,
             TestNode(RESPONDER)       <-----------inbound P2PConn---------- INITIATOR
         """
-        print("V2P2PEncryption: initiate_v2_handshake")
+        # print("V2P2PEncryption: initiate_v2_handshake")
         assert self.initiating
         x, X = self.v2_keygen()
         self.privkey = x # TODO: Remove redundant variables later
@@ -107,11 +107,11 @@ class V2P2PEncryption:
         ge = (ge[0].val, ge[1].val, 1)
         initiator_hdata = encode_bytes(ge) # TODO: Please simplify ellsq interface!!! rename fxn too
         self.initiator_hdata = initiator_hdata # TODO: Remove redundant variables later
-        print("---------------------------------------")
-        print("in initiate_v2_handshake: x=",x.hex())
-        print("in initiate_v2_handshake: X=",X.get_bytes().hex())
-        print("in initiate_v2_handshake: initiator_hdata=",initiator_hdata.hex())
-        print("---------------------------------------")
+        # print("---------------------------------------")
+        # print("in initiate_v2_handshake: x=",x.hex())
+        # print("in initiate_v2_handshake: X=",X.get_bytes().hex())
+        # print("in initiate_v2_handshake: initiator_hdata=",initiator_hdata.hex())
+        # print("---------------------------------------")
         return initiator_hdata
         # TODO: If my P2PConn is acting as the initiator. Then the TestNode would have received the message
         # how will the TestNode read this initiator_hdata?
@@ -123,7 +123,7 @@ class V2P2PEncryption:
             TestNode(INITIATOR)       -----------outbound P2PConn----------> RESPONDER
                                       <------------------------------------
         """
-        print("V2P2PEncryption: respond_v2_handshake")
+        # print("V2P2PEncryption: respond_v2_handshake")
         assert not self.initiating
         group_ele = decode_bytes(initiator_hdata) # TODO: Simplify the ell64 interface to interact with pubkey and not group_ele. maybe better name ellsq_encode for it
         if group_ele[1].val % 2 == 0:
@@ -143,14 +143,14 @@ class V2P2PEncryption:
         # TODO: check BIP: Responder needs to encrypt the responder's transport version with responder's send_F and send_V
         # This will be picked by initiator and should be decrypted with initiator's recv_F and recv_V
         send_bytes = responder_hdata #+ self.v2_enc_msg(bytes(self.transport_version))#TODO: TestNode is initiator and we need to be able to access F,V
-        print("---------------------------------------")
-        print("in respond_v2_handshake: X=",X.get_bytes().hex())
-        print("in respond_v2_handshake: y=",y.hex())
-        print("in respond_v2_handshake: Y=",Y.get_bytes().hex())
-        print("in respond_v2_handshake: responder_hdata=",responder_hdata.hex())
-        print("in respond_v2_handshake: ecdh_secret=",ecdh_secret)
-        print("in respond_v2_handshake: send_bytes=",send_bytes.hex())
-        print("---------------------------------------")
+        # print("---------------------------------------")
+        # print("in respond_v2_handshake: X=",X.get_bytes().hex())
+        # print("in respond_v2_handshake: y=",y.hex())
+        # print("in respond_v2_handshake: Y=",Y.get_bytes().hex())
+        # print("in respond_v2_handshake: responder_hdata=",responder_hdata.hex())
+        # print("in respond_v2_handshake: ecdh_secret=",ecdh_secret)
+        # print("in respond_v2_handshake: send_bytes=",send_bytes.hex())
+        # print("---------------------------------------")
         return send_bytes
         # TODO: send this to initiator which is TestNode and TestNode will have to read this and pass it as param to initiator_complete_handshake
 
@@ -161,7 +161,7 @@ class V2P2PEncryption:
                                        ------------------------------------>
                                        <-----------------------------------
         """
-        print("V2P2PEncryption: initiator_complete_handshake")
+        # print("V2P2PEncryption: initiator_complete_handshake")
         assert self.initiating
         responder_hdata = response[:64]
         group_ele = decode_bytes(responder_hdata) # TODO: Simplify the ell64 interface to interact with pubkey and not group_ele
@@ -177,13 +177,13 @@ class V2P2PEncryption:
         # responder_transport_version = self.v2_dec_msg(response[64:])
         # responder_transport_version = int.from_bytes(responder_transport_version, "big")
         # self.transport_version = min(responder_transport_version, self.transport_version)
-        print("---------------------------------------")
-        print("in initiator_complete_handshake: responder_hdata",responder_hdata.hex())
-        print("in initiator_complete_handshake: Y=",Y.get_bytes().hex())
-        print("in initiator_complete_handshake: x=",x.hex())
-        print("in initiator_complete_handshake: ecdh_secret=",ecdh_secret)
-        # print("in initiator_complete_handshake: responder_transport_version=",responder_transport_version)
-        print("---------------------------------------")
+        # print("---------------------------------------")
+        # print("in initiator_complete_handshake: responder_hdata",responder_hdata.hex())
+        # print("in initiator_complete_handshake: Y=",Y.get_bytes().hex())
+        # print("in initiator_complete_handshake: x=",x.hex())
+        # print("in initiator_complete_handshake: ecdh_secret=",ecdh_secret)
+        # # print("in initiator_complete_handshake: responder_transport_version=",responder_transport_version)
+        # print("---------------------------------------")
         # return self.v2_enc_msg(bytes(self.transport_version))
         # TODO: TestNode has to read transport version and send it as msg in responder_complete_handshake()
 
@@ -198,7 +198,7 @@ class V2P2PEncryption:
     #     print("---------------------------------------")
 
     def initialize_v2_transport(self, ecdh_secret, initiator_hdata, responder_hdata):
-        print("V2P2PEncryption: init_v2_transport")
+        # print("V2P2PEncryption: init_v2_transport")
         salt = bytes("bitcoin_v2_shared_secret".encode()) + initiator_hdata + responder_hdata + MAGIC_BYTES["regtest"]
         prk = hkdf_extract(salt, bytes.fromhex(ecdh_secret))
         # We no longer need the ECDH secret
@@ -223,23 +223,23 @@ class V2P2PEncryption:
 
         self.enc_aead = ChaCha20Poly1305AEAD(self.send_F,self.send_V)
         self.dec_aead = ChaCha20Poly1305AEAD(self.recv_F,self.recv_V)
-
-        print("---------------------------------------")
-        print("in init_v2_transport: initiator_F",initiator_F.hex())
-        print("in init_v2_transport: initiator_V=",initiator_V.hex())
-        print("in init_v2_transport: responder_F=",responder_F.hex())
-        print("in init_v2_transport: responder_V=",responder_V.hex())
-        print("in init_v2_transport: sid",self.sid.hex())
-        print("---------------------------------------")
+        # 
+        # print("---------------------------------------")
+        # print("in init_v2_transport: initiator_F",initiator_F.hex())
+        # print("in init_v2_transport: initiator_V=",initiator_V.hex())
+        # print("in init_v2_transport: responder_F=",responder_F.hex())
+        # print("in init_v2_transport: responder_V=",responder_V.hex())
+        # print("in init_v2_transport: sid",self.sid.hex())
+        # print("---------------------------------------")
 
     def v2_enc_msg(self, msg_bytes, ignore=False):
-        print("V2P2PEncryption: v2_enc_msg")
+        # print("V2P2PEncryption: v2_enc_msg")
         # _, _, ret = next(ChaCha20Poly1305AEAD(self.send_F, self.send_V, True, msg_bytes, ignore))
         _, _, ret = self.enc_aead.AEAD(True, msg_bytes, ignore)
         return ret
 
     def v2_dec_msg(self, encrypted_bytes):
-        print("V2P2PEncryption: v2_dec_msg")
+        # print("V2P2PEncryption: v2_dec_msg")
         # disconnect, ignore, ret = next(ChaCha20Poly1305AEAD(self.recv_F,self.recv_V, False, encrypted_bytes))
         disconnect, ignore, ret = self.dec_aead.AEAD(False, encrypted_bytes)
         
