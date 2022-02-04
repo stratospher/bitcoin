@@ -1,4 +1,5 @@
 # Copyright (c) 2019-2020 Pieter Wuille
+# Copyright (c) 2012 Christopher H. Casebeer - for HKDF
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test-only secp256k1 elliptic curve implementation
@@ -553,6 +554,38 @@ def sign_schnorr(key, msg, aux=None, flip_p=False, flip_r=False):
     k = kp if SECP256K1.has_even_y(R) != flip_r else SECP256K1_ORDER - kp
     e = int.from_bytes(TaggedHash("BIP0340/challenge", R[0].to_bytes(32, 'big') + P[0].to_bytes(32, 'big') + msg), 'big') % SECP256K1_ORDER
     return R[0].to_bytes(32, 'big') + ((k + e * sec) % SECP256K1_ORDER).to_bytes(32, 'big')
+
+def hkdf_extract(salt, input_key_material, hash=hashlib.sha256):
+    """Extract a pseudorandom key from the input_key_material
+
+    - salt is an optional salt value (a non-secret random value).
+      (if not provided, it is set to a string of hash_len zeros)
+    - input_key_material is the input keying material.
+    - hash is an optional hash function. hash_len denotes
+      the length of the hash function output in octets.
+    """
+    hash_len = hash().digest_size
+    if salt is None or len(salt) == 0:
+        salt = bytearray((0,) * hash_len)
+    return hmac.new(bytes(salt), input_key_material, hash).digest()
+
+def hkdf_expand(pseudo_random_key, info=b"", length=32, hash=hashlib.sha256):
+    """
+    Expand `pseudo_random_key` and `info` into a key of `length` bytes using
+    HKDF's expand function based on HMAC with the provided hash.
+    """
+    hash_len = hash().digest_size
+    length = int(length)
+    if length > 255 * hash_len:
+        raise Exception("Cannot expand to more than 255 * %d = %d bytes using the specified hash function" % (hash_len, 255 * hash_len))
+    blocks_needed = length // hash_len + (0 if length % hash_len == 0 else 1) # ceil
+    okm = b""
+    output_block = b""
+    for counter in range(blocks_needed):
+        str = (output_block + info + bytearray((counter + 1,))).decode("utf-8")
+        output_block = hmac.new(pseudo_random_key,  str.encode('utf-8'), hash).digest()
+        okm += output_block
+    return okm[:length]
 
 class TestFrameworkKey(unittest.TestCase):
     def test_schnorr(self):
