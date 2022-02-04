@@ -71,6 +71,7 @@ TEST_FRAMEWORK_MODULES = [
     "address",
     "blocktools",
     "chacha20",
+    "chacha20_poly1305_ae",
     "ellsq",
     "key",
     "muhash",
