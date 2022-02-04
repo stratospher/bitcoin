@@ -7,7 +7,7 @@ Do not use for anything but tests."""
 import random
 import unittest
 
-from .key import fe, SECP256K1, SECP256K1_G, SECP256K1_ORDER
+from .key import fe, ECPubKey, SECP256K1, SECP256K1_G, SECP256K1_ORDER
 
 C1 = fe(-3).sqrt()
 C2 = (C1 - fe(1)) / fe(2)
@@ -169,12 +169,32 @@ def decode(u, v):
     P = SECP256K1.affine(P)
     return fe(P[0]), fe(P[1])
 
-def encode_bytes(P):
-    u, v = encode(P)
+def ellsq_encode(pubkey):
+    """
+    generates elligator squared encoding of pubkey
+    Parameters:
+        pubkey : ECPubKey object
+    Returns: 64 bytes encoding
+    """
+    ge = pubkey.get_group_element()
+    u, v = encode((ge[0].val, ge[1].val, 1))
     return u.to_bytes() + v.to_bytes()
 
-def decode_bytes(enc):
-    return decode(fe.from_bytes(enc[:32]), fe.from_bytes(enc[32:]))
+def ellsq_decode(enc):
+    """
+    decodes elligator squared encoding to obtain pubkey
+    Parameters:
+        enc : 64 bytes encoding
+    Returns: ECPubKey object
+    """
+    x, y = decode(fe.from_bytes(enc[:32]), fe.from_bytes(enc[32:]))
+    if y.val % 2 == 0:
+        compressed_sec = b'\x02' + x.val.to_bytes(32, 'big')
+    else:
+        compressed_sec = b'\x03' + x.val.to_bytes(32, 'big')
+    pubkey = ECPubKey()
+    pubkey.set(compressed_sec)
+    return pubkey
 
 ELLSQ_ENC_TESTS = [
     [b"\x54\xca\xd2\x27\xb2\xc9\x8d\x5f\x7c\x78\x8c\xfc\x3d\xaf\xd6\x52\xf5\x8f\x69\xcf\xef\x63\x2b\x82\x2b\x35\xd0\xb0\xe2\x4f\xc0\x3a\xd2\x8c\xa1\x4b\x6f\x62\xd4\x53\x79\xc5\x3f\x70\xee\x40\x5c\xa9\x2c\xe7\xb6\xf9\x70\x83\x13\x05\xf2\x7d\xc4\x1e\xb6\x9d\xe0\x6e", b"\x02\x11\x62\x89\x03\x32\x88\x91\xae\x09\xd1\x08\xd8\x92\x43\xe4\x7e\x10\x9f\xe7\xb8\xbb\x1e\x2d\xf1\xa3\xae\x9b\x0e\x78\x08\x54\x9c"],
@@ -233,18 +253,15 @@ class TestFrameworkEllsq(unittest.TestCase):
     def test_encode_decode(self):
         for i in range(100):
             m = random.randrange(1, SECP256K1_ORDER)
-            A = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, m)]))
-            group_ele1 = fe(A[0]), fe(A[1])
-            ell64 = encode_bytes(A)
-            group_ele2 = decode_bytes(ell64)
-            assert group_ele1 == group_ele2
+            curve_point = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, m)]))
+            pubkey1 = ECPubKey()
+            pubkey1.set_from_curve_point(curve_point)
+            ell64 = ellsq_encode(pubkey1)
+            pubkey2 = ellsq_decode(ell64)
+            assert pubkey1.get_bytes() == pubkey2.get_bytes()
 
     def test_decode_test_vectors(self):
         for test_vector in ELLSQ_ENC_TESTS:
             ell64,  pubkey = test_vector
-            x, y = decode_bytes(ell64)
-            if y.val % 2 == 0:
-                compressed_sec = b'\x02' + x.val.to_bytes(32, 'big')
-            else:
-                compressed_sec = b'\x03' + x.val.to_bytes(32, 'big')
-            assert compressed_sec == pubkey
+            dec_pubkey = ellsq_decode(ell64)
+            assert dec_pubkey.get_bytes() == pubkey

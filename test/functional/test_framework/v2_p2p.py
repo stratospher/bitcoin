@@ -1,5 +1,5 @@
 from test_framework.aead import HEADER_LEN, MAC_TAGLEN, ChaCha20Poly1305AEAD, ChaCha20Forward4064DRBG
-from test_framework.ellsq import encode_bytes, decode_bytes
+from test_framework.ellsq import ellsq_encode, ellsq_decode
 from test_framework.key import hkdf_expand, hkdf_extract, ECDH, ECKey, ECPubKey
 # TODO: Remove this
 MAGIC_BYTES = {
@@ -80,9 +80,7 @@ class V2P2PEncryption:
         priv = priv.get_bytes()
         if self.initiating:
             while True:
-                ge = pub.get_group_element()
-                ge = (ge[0].val, ge[1].val, 1)
-                encoded_pubkey = encode_bytes(ge) # TODO: Please simplify ellsq interface!!!
+                encoded_pubkey = ellsq_encode(pub)
                 if encoded_pubkey[:12] == MAGIC_BYTES["regtest"] + b"version\x00": # TODO: Can prolly use super's magic bytes here insteaf of more imports
                     # Encoded public key cannot start with the specified prefix
                     priv = ECKey()
@@ -103,9 +101,7 @@ class V2P2PEncryption:
         x, X = self.v2_keygen()
         self.privkey = x # TODO: Remove redundant variables later
         self.pubkey = X
-        ge = X.get_group_element()
-        ge = (ge[0].val, ge[1].val, 1)
-        initiator_hdata = encode_bytes(ge) # TODO: Please simplify ellsq interface!!! rename fxn too
+        initiator_hdata = ellsq_encode(X) # TODO: Please simplify ellsq interface!!! rename fxn too
         self.initiator_hdata = initiator_hdata # TODO: Remove redundant variables later
         # print("---------------------------------------")
         # print("in initiate_v2_handshake: x=",x.hex())
@@ -125,19 +121,11 @@ class V2P2PEncryption:
         """
         # print("V2P2PEncryption: respond_v2_handshake")
         assert not self.initiating
-        group_ele = decode_bytes(initiator_hdata) # TODO: Simplify the ell64 interface to interact with pubkey and not group_ele. maybe better name ellsq_encode for it
-        if group_ele[1].val % 2 == 0:
-            pubX = b'\x02' + group_ele[0].val.to_bytes(32, 'big')
-        else:
-            pubX = b'\x03' + group_ele[0].val.to_bytes(32, 'big')
+        X = ellsq_decode(initiator_hdata)
         y, Y = self.v2_keygen()
         self.privkey = y
         self.pubkey = Y
-        ge = Y.get_group_element()
-        ge = (ge[0].val, ge[1].val, 1)
-        responder_hdata = encode_bytes(ge)
-        X = ECPubKey()
-        X.set(pubX)
+        responder_hdata = ellsq_encode(Y)
         ecdh_secret = ECDH(X, y).shared_secret()
         self.initialize_v2_transport(ecdh_secret, initiator_hdata, responder_hdata)
         # TODO: check BIP: Responder needs to encrypt the responder's transport version with responder's send_F and send_V
@@ -164,14 +152,8 @@ class V2P2PEncryption:
         # print("V2P2PEncryption: initiator_complete_handshake")
         assert self.initiating
         responder_hdata = response[:64]
-        group_ele = decode_bytes(responder_hdata) # TODO: Simplify the ell64 interface to interact with pubkey and not group_ele
-        if group_ele[1].val % 2 == 0:
-            pubY = b'\x02' + group_ele[0].val.to_bytes(32, 'big')
-        else:
-            pubY = b'\x03' + group_ele[0].val.to_bytes(32, 'big')
-        x = self.privkey # TODO: Later remove redundant variable
-        Y = ECPubKey()
-        Y.set(pubY)
+        Y = ellsq_decode(responder_hdata)
+        x = self.privkey
         ecdh_secret = ECDH(Y, x).shared_secret()
         self.initialize_v2_transport(ecdh_secret, self.initiator_hdata, responder_hdata)
         # responder_transport_version = self.v2_dec_msg(response[64:])

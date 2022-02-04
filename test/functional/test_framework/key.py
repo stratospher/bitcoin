@@ -280,6 +280,14 @@ class ECPubKey():
         else:
             self.valid = False
 
+    def set_from_curve_point(self, curve_point):
+        x, y = fe(curve_point[0]), fe(curve_point[1])
+        if y.val % 2 == 0:
+            compressed_sec = b'\x02' + x.val.to_bytes(32, 'big')
+        else:
+            compressed_sec = b'\x03' + x.val.to_bytes(32, 'big')
+        self.set(compressed_sec)
+
     @property
     def is_compressed(self):
         return self.compressed
