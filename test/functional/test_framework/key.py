@@ -555,6 +555,32 @@ def sign_schnorr(key, msg, aux=None, flip_p=False, flip_r=False):
     e = int.from_bytes(TaggedHash("BIP0340/challenge", R[0].to_bytes(32, 'big') + P[0].to_bytes(32, 'big') + msg), 'big') % SECP256K1_ORDER
     return R[0].to_bytes(32, 'big') + ((k + e * sec) % SECP256K1_ORDER).to_bytes(32, 'big')
 
+class ECDH():
+    """Elliptic-curve Diffie–Hellman (ECDH) key agreement protocol that allows two parties, each having
+    an elliptic-curve public–private key pair, to establish a shared secret over an insecure channel."""
+    def __init__(self, pubkey, privkey):
+        """Initialise the public–private key pair
+        Parameters:
+            pubkey: ECPubKey object
+            privkey: ECKey object
+        """
+        self.pubkey = pubkey
+        self.privkey = privkey
+
+    def shared_secret(self):
+        their_pubkey = self.pubkey.get_group_element()
+        their_pubkey = (their_pubkey[0].val, their_pubkey[1].val, 1)
+        my_privkey = int.from_bytes(self.privkey.get_bytes(), "big")
+        x, y, _ = SECP256K1.affine(SECP256K1.mul([(their_pubkey, my_privkey)]))
+        if y % 2 == 0:
+            version = b'\x02'
+        else:
+            version = b'\x03'
+        m = hashlib.sha256()
+        m.update(version)
+        m.update(x.to_bytes(32, 'big'))
+        return m.hexdigest()
+
 def hkdf_extract(salt, input_key_material, hash=hashlib.sha256):
     """Extract a pseudorandom key from the input_key_material
 
