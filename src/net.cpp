@@ -715,8 +715,45 @@ void CNode::CopyStats(CNodeStats& stats)
 }
 #undef X
 
+void CNode::InitV2P2P(const CPubKey& peer_pubkey, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, bool initiating)
+{
+    ECDHSecret ecdh_secret;
+    v2_priv_key.ComputeECDHSecret(peer_pubkey, ecdh_secret);
+
+    BIP324Keys v2_keys;
+    DeriveBIP324Keys(std::move(ecdh_secret), initiator_hdata, responder_hdata, v2_keys);
+
+    if (initiating) {
+        m_deserializer = std::make_unique<V2TransportDeserializer>(GetId(), v2_keys.responder_F, v2_keys.responder_V);
+        m_serializer = std::make_unique<V2TransportSerializer>(v2_keys.initiator_F, v2_keys.initiator_V);
+    } else {
+        m_deserializer = std::make_unique<V2TransportDeserializer>(GetId(), v2_keys.initiator_F, v2_keys.initiator_V);
+        m_serializer = std::make_unique<V2TransportSerializer>(v2_keys.responder_F, v2_keys.responder_V);
+    }
+}
+
+void CNode::EnsureInitV2Key(bool initiating)
+{
+    static const std::string version = "version\x00";
+
+    // v2_priv_key must be valid and the initiator's pubkey cannot begin with NETWORK_MAGIC || "version\x00"
+    while (!v2_priv_key.IsValid() || (initiating &&
+                                      memcmp(hdata_ellsq_pubkey.data(), Params().MessageStart(), CMessageHeader::MESSAGE_START_SIZE) == 0 &&
+                                      memcmp(hdata_ellsq_pubkey.data() + CMessageHeader::MESSAGE_START_SIZE, version.data(), version.size()) == 0)) {
+        v2_priv_key.MakeNewKey(true);
+
+        std::array<uint8_t, 32> rnd32;
+        GetRandBytes(rnd32.data(), 32);
+        hdata_ellsq_pubkey = v2_priv_key.GetPubKey().EllSqEncode(rnd32).value();
+    }
+}
+
 bool CNode::ReceiveMsgBytes(Span<const uint8_t> msg_bytes, bool& complete)
 {
+    if (!m_deserializer) {
+        return false;
+    }
+
     complete = false;
     const auto time = GetTime<std::chrono::microseconds>();
     LOCK(cs_vRecv);
@@ -1459,6 +1496,9 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
     }
 
     const bool inbound_onion = std::find(m_onion_binds.begin(), m_onion_binds.end(), addr_bind) != m_onion_binds.end();
+
+    // A listening v2 peer does not know the advertised services for the initiating peer at this point.
+    // Assume a v1 connection for now.
     CNode* pnode = new CNode(id,
                              nodeServices,
                              std::move(sock),
@@ -1845,7 +1885,7 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
         {
             // typical socket buffer is 8K-64K
             uint8_t pchBuf[0x10000];
-            int nBytes = 0;
+            ssize_t nBytes = 0;
             {
                 LOCK(pnode->m_sock_mutex);
                 if (!pnode->m_sock) {
@@ -1856,10 +1896,39 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
             if (nBytes > 0)
             {
                 bool notify = false;
-                if (!pnode->ReceiveMsgBytes({pchBuf, (size_t)nBytes}, notify)) {
-                    pnode->CloseSocketDisconnect();
+                size_t num_bytes = (size_t)nBytes;
+                if (!pnode->ReceiveMsgBytes({pchBuf, num_bytes}, notify)) {
+                    if (gArgs.GetBoolArg("-v2transport", DEFAULT_V2_TRANSPORT) &&
+                        !pnode->tried_v2_handshake && num_bytes == ELLSQ_ENCODED_SIZE) {
+                        pnode->EnsureInitV2Key(!pnode->IsInboundConn());
+                        EllSqPubKey peer_ellsq;
+                        std::copy(pchBuf, pchBuf + ELLSQ_ENCODED_SIZE, peer_ellsq.data());
+                        CPubKey v2_peer_pubkey = CPubKey(peer_ellsq);
+
+                        Span<uint8_t> initiator_hdata, responder_hdata;
+
+                        if (pnode->IsInboundConn()) {
+                            // We are the responder
+                            initiator_hdata = Span(pchBuf, nBytes);
+                            responder_hdata = pnode->hdata_ellsq_pubkey;
+                        } else {
+                            initiator_hdata = pnode->hdata_ellsq_pubkey;
+                            responder_hdata = Span(pchBuf, nBytes);
+                        }
+
+                        pnode->InitV2P2P(v2_peer_pubkey, initiator_hdata, responder_hdata, !pnode->IsInboundConn());
+                        if (pnode->IsInboundConn()) {
+                            PushV2EllSqPubkey(pnode);
+                        } else {
+                            m_msgproc->InitP2P(*pnode);
+                        }
+
+                        pnode->tried_v2_handshake = true;
+                    } else {
+                        pnode->CloseSocketDisconnect();
+                    }
                 }
-                RecordBytesRecv(nBytes);
+                RecordBytesRecv(num_bytes);
                 if (notify) {
                     size_t nSizeAdded = 0;
                     auto it(pnode->vRecvMsg.begin());
@@ -2529,6 +2598,9 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     if (grantOutbound)
         grantOutbound->MoveTo(pnode->grantOutbound);
 
+    if (pnode->PreferV2Conn()) {
+        PushV2EllSqPubkey(pnode);
+    }
     m_msgproc->InitializeNode(pnode);
     {
         LOCK(m_nodes_mutex);
@@ -3273,8 +3345,12 @@ CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, std::shared_ptr<Sock> s
         LogPrint(BCLog::NET, "Added connection peer=%d\n", id);
     }
 
-    m_deserializer = std::make_unique<V1TransportDeserializer>(V1TransportDeserializer(Params(), id, SER_NETWORK, INIT_PROTO_VERSION));
-    m_serializer = std::make_unique<V1TransportSerializer>(V1TransportSerializer());
+    if (PreferV2Conn()) {
+        EnsureInitV2Key(!IsInboundConn());
+    } else {
+        m_deserializer = std::make_unique<V1TransportDeserializer>(V1TransportDeserializer(Params(), id, SER_NETWORK, INIT_PROTO_VERSION));
+        m_serializer = std::make_unique<V1TransportSerializer>(V1TransportSerializer());
+    }
 }
 
 bool CConnman::NodeFullyConnected(const CNode* pnode)
@@ -3284,8 +3360,6 @@ bool CConnman::NodeFullyConnected(const CNode* pnode)
 
 void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
 {
-    size_t nMessageSize = msg.data.size();
-    LogPrint(BCLog::NET, "sending %s (%d bytes) peer=%d\n", msg.m_type, nMessageSize, pnode->GetId());
     if (gArgs.GetBoolArg("-capturemessages", false)) {
         CaptureMessage(pnode->addr, msg.m_type, msg.data, /*is_incoming=*/false);
     }
@@ -3299,11 +3373,18 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
         msg.data.data()
     );
 
+    if (!pnode->m_serializer) {
+        return;
+    }
+
     // make sure we use the appropriate network transport format
     std::vector<unsigned char> serializedHeader;
     if (!pnode->m_serializer->prepareForTransport(msg, serializedHeader)) {
         return;
     }
+
+    size_t nMessageSize = msg.data.size();
+    LogPrint(BCLog::NET, "sending %s (%d bytes) peer=%d\n", msg.m_type, nMessageSize, pnode->GetId());
 
     size_t nTotalSize = nMessageSize + serializedHeader.size();
 
@@ -3317,12 +3398,32 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
         pnode->nSendSize += nTotalSize;
 
         if (pnode->nSendSize > nSendBufferMaxSize) pnode->fPauseSend = true;
-        pnode->vSendMsg.push_back(std::move(serializedHeader));
+
+        // The serializedHeader is empty for v2 p2p messages since all the bytes are in msg.data
+        if (!serializedHeader.empty()) pnode->vSendMsg.push_back(std::move(serializedHeader));
         if (nMessageSize) pnode->vSendMsg.push_back(std::move(msg.data));
 
         // If write queue empty, attempt "optimistic write"
         if (optimisticSend) nBytesSent = SocketSendData(*pnode);
     }
+    if (nBytesSent) RecordBytesSent(nBytesSent);
+}
+
+void CConnman::PushV2EllSqPubkey(CNode* pnode)
+{
+    std::vector<unsigned char> ellsq_bytes;
+    ellsq_bytes.resize(ELLSQ_ENCODED_SIZE);
+    std::copy(pnode->hdata_ellsq_pubkey.begin(), pnode->hdata_ellsq_pubkey.end(), ellsq_bytes.begin());
+    size_t nBytesSent;
+    {
+        LOCK(pnode->cs_vSend);
+        pnode->nSendSize += ellsq_bytes.size();
+        pnode->vSendMsg.push_back(ellsq_bytes);
+
+        // Send immediately.
+        nBytesSent = SocketSendData(*pnode);
+    }
+
     if (nBytesSent) RecordBytesSent(nBytesSent);
 }
 

@@ -1196,7 +1196,7 @@ void PeerManagerImpl::InitializeNode(CNode *pnode)
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, std::move(peer));
     }
-    if (!pnode->IsInboundConn()) {
+    if (!pnode->IsInboundConn() && !pnode->PreferV2Conn()) {
         InitP2P(*pnode);
     }
 }

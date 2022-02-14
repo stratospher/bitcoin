@@ -366,6 +366,11 @@ static inline bool MayHaveUsefulAddressDB(ServiceFlags services)
     return (services & NODE_NETWORK) || (services & NODE_NETWORK_LIMITED);
 }
 
+static inline bool SupportsV2Transport(ServiceFlags services)
+{
+    return (services & NODE_P2P_V2);
+}
+
 /** A CService with information about it as peer */
 class CAddress : public CService
 {
