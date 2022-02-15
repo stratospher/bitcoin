@@ -27,11 +27,15 @@ FUZZ_TARGET(p2p_v2_transport_serialization)
 
     // There is no sense in providing a mac assist if the length is incorrect.
     bool mac_assist = length_assist && fuzzed_data_provider.ConsumeBool();
+    bool is_decoy = fuzzed_data_provider.ConsumeBool();
     auto payload_bytes = fuzzed_data_provider.ConsumeRemainingBytes<uint8_t>();
 
     if (payload_bytes.size() >= CHACHA20_POLY1305_AEAD_AAD_LEN + CHACHA20_POLY1305_AEAD_TAG_LEN) {
         if (length_assist) {
             uint32_t packet_length = payload_bytes.size() - CHACHA20_POLY1305_AEAD_AAD_LEN - CHACHA20_POLY1305_AEAD_TAG_LEN;
+            if (is_decoy) {
+                packet_length |= V2_IGNORE_BIT_MASK;
+            }
             payload_bytes[0] = packet_length & 0xff;
             payload_bytes[1] = (packet_length >> 8) & 0xff;
             payload_bytes[2] = (packet_length >> 16) & 0xff;
@@ -65,6 +69,10 @@ FUZZ_TARGET(p2p_v2_transport_serialization)
 
             if (length_assist && mac_assist) {
                 assert(!reject_message);
+            }
+
+            if (length_assist && is_decoy) {
+                assert(reject_message);
             }
 
             if (!reject_message) {

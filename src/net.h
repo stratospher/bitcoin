@@ -92,6 +92,7 @@ static const size_t DEFAULT_MAXRECEIVEBUFFER = 5 * 1000;
 static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
 static constexpr bool DEFAULT_V2_TRANSPORT{false};
+static constexpr uint32_t V2_IGNORE_BIT_MASK = (1 << 23);
 
 typedef int64_t NodeId;
 
@@ -405,6 +406,7 @@ private:
     size_t m_hdr_pos = 0;                         // read pos in header
     size_t m_data_pos = 0;                        // read pos in data
     bool m_processed_version_placeholder = false; // BIP324 version message has been received
+    bool m_ignore_bit = false;                    // whether the ignore bit was set in the header
 
 public:
     V2TransportDeserializer(const NodeId node_id, CPrivKey& k1, CPrivKey& k2) : m_aead(new ChaCha20Poly1305AEAD(Span<unsigned char>(k1.data(), k1.size()), Span<unsigned char>(k2.data(), k2.size()))), m_node_id(node_id), vRecv(SER_NETWORK, INIT_PROTO_VERSION)
@@ -420,6 +422,7 @@ public:
         m_hdr_pos = 0;
         m_message_size = 0;
         m_data_pos = 0;
+        m_ignore_bit = false;
     }
     bool Complete() const override
     {
