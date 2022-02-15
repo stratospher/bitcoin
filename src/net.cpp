@@ -957,7 +957,8 @@ int V2TransportDeserializer::readData(Span<const uint8_t> msg_bytes)
 
 CNetMessage V2TransportDeserializer::GetMessage(const std::chrono::microseconds time, bool& reject_message, bool& disconnect)
 {
-    const size_t min_payload_size = 1; // BIP324 1-byte message type id is the minimum payload
+    // BIP324 1-byte message type id is the minimum payload after the v2 transport version placeholder has been received
+    size_t min_payload_size = m_processed_version_placeholder ? 1 : 0;
 
     // Initialize out parameters
     reject_message = (vRecv.size() < V2_MIN_MESSAGE_LENGTH + min_payload_size);
@@ -978,6 +979,13 @@ CNetMessage V2TransportDeserializer::GetMessage(const std::chrono::microseconds 
 
         // Advance the bytestream by the length of the encrypted header
         vRecv.ignore(CHACHA20_POLY1305_AEAD_AAD_LEN);
+
+        // The first message we receive is the BIP324 transport version placeholder message.
+        // Discard it for v2.0 clients.
+        if (!m_processed_version_placeholder) {
+            reject_message = true;
+            m_processed_version_placeholder = true;
+        }
 
         if (!reject_message) {
             uint8_t size_or_shortid = 0;
@@ -1022,6 +1030,7 @@ CNetMessage V2TransportDeserializer::GetMessage(const std::chrono::microseconds 
     }
 
     Reset();
+
     return msg;
 }
 
@@ -1029,7 +1038,12 @@ bool V2TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vec
 {
     size_t serialized_command_size = 1; // short-IDs are 1 byte
     std::optional<uint8_t> cmd_short_id = GetShortIDFromMessageType(msg.m_type);
-    if (!cmd_short_id) {
+
+    if (msg.m_type.empty() && msg.data.size() == 0) {
+        // This condition is only true for the transport version placeholder message.
+        // We don't need to serialize the command in this case.
+        serialized_command_size = 0;
+    } else if (!cmd_short_id) {
         // message command without an assigned short-ID
         assert(msg.m_type.size() <= NET_P2P_V2_CMD_MAX_CHARS_SIZE);
         // encode as varstr, max 12 chars
@@ -1040,7 +1054,7 @@ bool V2TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vec
     uint32_t packet_length = serialized_command_size + msg.data.size();
 
     // prepare the packet length & message command and reserve 4 bytes (3bytes AAD + 1byte short-ID)
-    std::vector<unsigned char> serialized_header(CHACHA20_POLY1305_AEAD_AAD_LEN + 1);
+    std::vector<unsigned char> serialized_header(CHACHA20_POLY1305_AEAD_AAD_LEN + serialized_command_size);
     // LE serialize the 24bits length
     // we do "manually" encode this since there is no helper for 24bit serialization
     packet_length = htole32(packet_length);
@@ -1051,7 +1065,7 @@ bool V2TransportSerializer::prepareForTransport(CSerializedNetMsg& msg, std::vec
     if (cmd_short_id) {
         // append the single byte short ID...
         vector_writer << cmd_short_id.value();
-    } else {
+    } else if (!msg.m_type.empty()) {
         // or the ASCII command string
         vector_writer << msg.m_type;
     }
@@ -1893,13 +1907,12 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
                 }
                 nBytes = pnode->m_sock->Recv(pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
             }
-            if (nBytes > 0)
-            {
+            if (nBytes > 0) {
                 bool notify = false;
                 size_t num_bytes = (size_t)nBytes;
                 if (!pnode->ReceiveMsgBytes({pchBuf, num_bytes}, notify)) {
                     if (gArgs.GetBoolArg("-v2transport", DEFAULT_V2_TRANSPORT) &&
-                        !pnode->tried_v2_handshake && num_bytes == ELLSQ_ENCODED_SIZE) {
+                        !pnode->tried_v2_handshake && num_bytes >= ELLSQ_ENCODED_SIZE) {
                         pnode->EnsureInitV2Key(!pnode->IsInboundConn());
                         EllSqPubKey peer_ellsq;
                         std::copy(pchBuf, pchBuf + ELLSQ_ENCODED_SIZE, peer_ellsq.data());
@@ -1909,21 +1922,30 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
 
                         if (pnode->IsInboundConn()) {
                             // We are the responder
-                            initiator_hdata = Span(pchBuf, nBytes);
+                            initiator_hdata = Span(pchBuf, ELLSQ_ENCODED_SIZE);
                             responder_hdata = pnode->hdata_ellsq_pubkey;
                         } else {
                             initiator_hdata = pnode->hdata_ellsq_pubkey;
-                            responder_hdata = Span(pchBuf, nBytes);
+                            responder_hdata = Span(pchBuf, ELLSQ_ENCODED_SIZE);
                         }
 
                         pnode->InitV2P2P(v2_peer_pubkey, initiator_hdata, responder_hdata, !pnode->IsInboundConn());
                         if (pnode->IsInboundConn()) {
                             PushV2EllSqPubkey(pnode);
-                        } else {
+                        }
+
+                        // Send empty message for transport version placeholder
+                        CSerializedNetMsg msg;
+                        PushMessage(pnode, std::move(msg));
+
+                        if (!pnode->IsInboundConn()) {
                             m_msgproc->InitP2P(*pnode);
                         }
 
                         pnode->tried_v2_handshake = true;
+                        if (num_bytes > ELLSQ_ENCODED_SIZE && !pnode->ReceiveMsgBytes({pchBuf + ELLSQ_ENCODED_SIZE, (size_t)(nBytes - ELLSQ_ENCODED_SIZE)}, notify)) {
+                            pnode->CloseSocketDisconnect();
+                        }
                     } else {
                         pnode->CloseSocketDisconnect();
                     }
@@ -1945,17 +1967,13 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
                     }
                     WakeMessageHandler();
                 }
-            }
-            else if (nBytes == 0)
-            {
+            } else if (nBytes == 0) {
                 // socket closed gracefully
                 if (!pnode->fDisconnect) {
                     LogPrint(BCLog::NET, "socket closed for peer=%d\n", pnode->GetId());
                 }
                 pnode->CloseSocketDisconnect();
-            }
-            else if (nBytes < 0)
-            {
+            } else if (nBytes < 0) {
                 // error
                 int nErr = WSAGetLastError();
                 if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
@@ -2598,6 +2616,7 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
     if (grantOutbound)
         grantOutbound->MoveTo(pnode->grantOutbound);
 
+    // Only the outbound peer knows that both sides support BIP324 transport
     if (pnode->PreferV2Conn()) {
         PushV2EllSqPubkey(pnode);
     }

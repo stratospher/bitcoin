@@ -930,7 +930,8 @@ void message_serialize_deserialize_test(bool v2, const std::vector<CSerializedNe
     }
     // run a couple of times through all messages with the same AEAD instance
     for (unsigned int i = 0; i < 100; i++) {
-        for (const CSerializedNetMsg& msg_orig : test_msgs) {
+        for (size_t msg_index = 0; msg_index < test_msgs.size(); msg_index++) {
+            const CSerializedNetMsg& msg_orig = test_msgs[msg_index];
             // bypass the copy protection
             CSerializedNetMsg msg;
             msg.data = msg_orig.data;
@@ -958,7 +959,9 @@ void message_serialize_deserialize_test(bool v2, const std::vector<CSerializedNe
             bool reject_message{true};
             bool disconnect{true};
             CNetMessage result{deserializer->GetMessage(GetTime<std::chrono::microseconds>(), reject_message, disconnect)};
-            BOOST_CHECK(!reject_message);
+
+            // The first v2 message is reject by V2TransportDeserializer as a placeholder for transport version messages
+            BOOST_CHECK(!v2 || (i == 0 && msg_index == 0) || !reject_message);
             BOOST_CHECK(!disconnect);
             BOOST_CHECK(reject_message || result.m_type == msg.m_type);
             BOOST_CHECK(reject_message || raw_msg_size == result.m_message_size);
