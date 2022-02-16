@@ -413,7 +413,10 @@ CNode* CConnman::FindNode(const CService& addr)
 
 bool CConnman::AlreadyConnectedToAddress(const CAddress& addr)
 {
-    return FindNode(static_cast<CNetAddr>(addr)) || FindNode(addr.ToStringIPPort());
+    CNode* found_by_addr = FindNode(static_cast<CNetAddr>(addr));
+    CNode* found_by_ip_port = FindNode(addr.ToStringIPPort());
+    return (found_by_addr && !found_by_addr->fDisconnect) ||
+           (found_by_ip_port && !found_by_ip_port->fDisconnect);
 }
 
 bool CConnman::CheckIncomingNonce(uint64_t nonce)
@@ -478,8 +481,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
 
         // Look for an existing connection
         CNode* pnode = FindNode(static_cast<CService>(addrConnect));
-        if (pnode)
-        {
+        if (pnode && !pnode->fDisconnect) {
             LogPrintf("Failed to open new connection, already connected\n");
             return nullptr;
         }
@@ -505,7 +507,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
             // In that case, drop the connection that was just created.
             LOCK(m_nodes_mutex);
             CNode* pnode = FindNode(static_cast<CService>(addrConnect));
-            if (pnode) {
+            if (pnode && !pnode->fDisconnect) {
                 LogPrintf("Failed to open new connection, already connected\n");
                 return nullptr;
             }
@@ -1450,6 +1452,16 @@ bool CConnman::ShouldRunInactivityChecks(const CNode& node, std::chrono::seconds
     return node.m_connected + m_peer_connect_timeout < now;
 }
 
+void CConnman::DowngradeToV1Transport(CNode& node)
+{
+    AssertLockNotHeld(m_total_bytes_sent_mutex);
+    LogPrint(BCLog::NET, "downgrading to v1 transport protocol for peer=%d\n", node.GetId());
+    CAddress addr = node.addr;
+    addr.nServices = ServiceFlags(addr.nServices & ~NODE_P2P_V2);
+    OpenNetworkConnection(addr, false, &node.grantOutbound, addr.ToStringIPPort().c_str(), node.m_conn_type);
+    node.v2_key_exchange_complete = true;
+}
+
 bool CConnman::InactivityCheck(const CNode& node) const
 {
     // Tests that see disconnects after using mocktime can start nodes with a
@@ -1726,6 +1738,13 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
                     LogPrint(BCLog::NET, "socket closed for peer=%d\n", pnode->GetId());
                 }
                 pnode->CloseSocketDisconnect();
+
+                // Downgrade if a v2 outbound connection was met with a disconnection before receiving anything
+                if (pnode->PreferV2Conn() &&
+                    !pnode->IsInboundConn() &&
+                    (pnode->peer_ellswift_buf.empty() && !pnode->v2_keys_derived)) {
+                    DowngradeToV1Transport(*pnode);
+                }
             } else if (nBytes < 0) {
                 // error
                 int nErr = WSAGetLastError();
@@ -1745,7 +1764,16 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
             if (bytes_sent) RecordBytesSent(bytes_sent);
         }
 
-        if (InactivityCheck(*pnode)) pnode->fDisconnect = true;
+        if (InactivityCheck(*pnode)) {
+            pnode->fDisconnect = true;
+            // Downgrade if a v2 outbound connection was met with inactivity before receiving anything
+            if (pnode->PreferV2Conn() &&
+                !pnode->IsInboundConn() &&
+                (pnode->peer_ellswift_buf.empty() && !pnode->v2_keys_derived) &&
+                pnode->m_last_recv.load().count() == 0) {
+                DowngradeToV1Transport(*pnode);
+            }
+        }
     }
 }
 
@@ -2379,8 +2407,10 @@ void CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
         if (IsLocal(addrConnect) || banned_or_discouraged || AlreadyConnectedToAddress(addrConnect)) {
             return;
         }
-    } else if (FindNode(std::string(pszDest)))
-        return;
+    } else {
+        auto existing_node = FindNode(std::string(pszDest));
+        if (existing_node && !existing_node->fDisconnect) return;
+    }
 
     CNode* pnode = ConnectNode(addrConnect, pszDest, fCountFailure, conn_type);
 
