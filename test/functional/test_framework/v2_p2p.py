@@ -82,6 +82,7 @@ class V2P2PEncryption:
         self.sid = None
         self.__privkey = None
         self.ellsq_pubkey = None
+        self.can_process_transport_version = False
         self.tried_v2_handshake = False # True when the initial handshake is over
 
     @staticmethod
@@ -119,6 +120,7 @@ class V2P2PEncryption:
         self.__privkey, self.ellsq_pubkey = self.v2_keygen()
         ecdh_secret = V2P2PEncryption.ellsq_ecdh_secret(self.__privkey, initiator_pubkey, self.ellsq_pubkey, initiator_pubkey)
         self.initialize_v2_transport(ecdh_secret, ellsq_X, self.ellsq_pubkey)
+        self.can_process_transport_version = True
         return self.ellsq_pubkey
 
     def initiator_complete_handshake(self, response):
@@ -130,6 +132,13 @@ class V2P2PEncryption:
         Y = ellsq_decode(ellsq_Y)
         ecdh_secret = V2P2PEncryption.ellsq_ecdh_secret(self.__privkey, self.ellsq_pubkey, ellsq_Y, Y)
         self.initialize_v2_transport(ecdh_secret, self.ellsq_pubkey, ellsq_Y)
+        self.can_process_transport_version = True
+
+    def responder_complete_handshake(self, msg):
+        assert not self.initiating
+        _, initiator_transport_version = self.v2_dec_msg(msg)
+        self.tried_v2_handshake = True
+        return initiator_transport_version
 
     def initialize_v2_transport(self, ecdh_secret, ellsq_X, ellsq_Y, net_magic="regtest"):
         salt = b"bitcoin_v2_shared_secret" + ellsq_X + ellsq_Y + MAGIC_BYTES[net_magic]
