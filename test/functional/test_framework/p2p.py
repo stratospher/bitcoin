@@ -252,28 +252,45 @@ class P2PConnection(asyncio.Protocol):
         """initial v2 handshake when p2p connection is the initiator (inbound connections)
         Before this function gets called, p2p connection has already initiated the v2 handshake in connection_made()."""
         # process the elligator squared encoding bytes
-        if len(self.recvbuf) < 64:
-            return
-        response = self.recvbuf[:64]
-        self.v2_connection.initiator_complete_handshake(response)
-        self.v2_connection.tried_v2_handshake = True
-        self.recvbuf = self.recvbuf[64:]
-        while self.queue_messages:
-            message = self.queue_messages.pop(0)
-            self.send_message(message)
+        if not self.v2_connection.can_process_transport_version:
+            if len(self.recvbuf) < 64:
+                return
+            response = self.recvbuf[:64]
+            self.v2_connection.initiator_complete_handshake(response)
+            self.recvbuf = self.recvbuf[64:]
+        # process the transport version. a separate condition since - elligator squared encoding bytes and
+        # transport version may be received together/one after the other in self.recvbuf
+        if self.v2_connection.can_process_transport_version and self.recvbuf:
+            length, responder_transport_version = self.v2_connection.v2_dec_msg(self.recvbuf)
+            # complete the handshake by sending back p2p connection's transport_version(encrypted)
+            self.send_raw_message(self.v2_connection.v2_enc_msg(b''))
+            self.v2_connection.tried_v2_handshake = True
+            logger.debug("initial v2 handshake complete")
+            self.recvbuf = self.recvbuf[3+length+16:]
+            # since initial v2 handshake is complete, queued messages can be sent
+            while self.queue_messages:
+                message = self.queue_messages.pop(0)
+                self.send_message(message)
 
     def v2_responder_handshake(self):
         """initial v2 handshake when p2p connection is the responder (outbound connections)"""
-        if len(self.recvbuf) < 64:
+        if not self.v2_connection.can_process_transport_version:
+            if len(self.recvbuf) < 64:
+                return
+            else:
+                # we get the 64 bytes elligator squared encoding
+                initiator_hdata = self.recvbuf[:64]
+                response = self.v2_connection.respond_v2_handshake(initiator_hdata)
+                # send 64 bytes elligator squared encoding of our public key
+                self.send_raw_message(response)
+                # send p2p connection's transport_version(encrypted)
+                self.send_raw_message(self.v2_connection.v2_enc_msg(b''))
+                self.recvbuf = self.recvbuf[64:]
             return
         else:
-            # we get the 64 bytes elligator squared encoding
-            initiator_hdata = self.recvbuf[:64]
-            response = self.v2_connection.respond_v2_handshake(initiator_hdata)
-            # send 64 bytes elligator squared encoding of our public key
-            self.send_raw_message(response)
-            self.v2_connection.tried_v2_handshake = True
-            self.recvbuf = self.recvbuf[64:]
+            initiator_transport_version = self.v2_connection.responder_complete_handshake(self.recvbuf)
+            logger.debug("initial v2 handshake complete")
+            self.recvbuf = self.recvbuf[3+len(initiator_transport_version)+16:]
 
     def _on_data(self):
         """Try to read P2P messages from the recv buffer.
