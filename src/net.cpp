@@ -714,6 +714,13 @@ void CNode::InitV2P2P(const CPubKey& peer_pubkey, const Span<uint8_t> initiator_
     BIP324Keys v2_keys;
     DeriveBIP324Keys(std::move(ecdh_secret), initiator_hdata, responder_hdata, v2_keys);
 
+    LogPrintf("#### ECDH Secret: %s\n", HexStr(ecdh_secret));
+    LogPrintf("#### initiator_F: %s\n", HexStr(v2_keys.initiator_F));
+    LogPrintf("#### initiator_V: %s\n", HexStr(v2_keys.initiator_V));
+    LogPrintf("#### responder_F: %s\n", HexStr(v2_keys.responder_F));
+    LogPrintf("#### responder_V: %s\n", HexStr(v2_keys.responder_V));
+    LogPrintf("#### session_id: %s\n", HexStr(v2_keys.session_id));
+
     if (initiating) {
         m_deserializer = std::make_unique<V2TransportDeserializer>(GetId(), v2_keys.responder_F, v2_keys.responder_V);
         m_serializer = std::make_unique<V2TransportSerializer>(v2_keys.initiator_F, v2_keys.initiator_V);
@@ -1907,6 +1914,7 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
                         pnode->EnsureInitV2Key(!pnode->IsInboundConn());
                         EllSqPubKey peer_ellsq;
                         std::copy(pchBuf, pchBuf + ELLSQ_ENCODED_SIZE, peer_ellsq.data());
+                        LogPrintf("#### Peer pubkey ellsq: %s\n", HexStr(peer_ellsq));
                         CPubKey v2_peer_pubkey = CPubKey(peer_ellsq);
 
                         Span<uint8_t> initiator_hdata, responder_hdata;
@@ -3430,6 +3438,7 @@ void CConnman::PushV2EllSqPubkey(CNode* pnode)
         pnode->nSendSize += ellsq_bytes.size();
         pnode->vSendMsg.push_back(ellsq_bytes);
 
+        LogPrintf("########ELLSQ KEY: %s\n", HexStr(ellsq_bytes));
         // Send immediately.
         nBytesSent = SocketSendData(*pnode);
     }
