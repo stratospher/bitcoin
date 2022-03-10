@@ -15,6 +15,7 @@
 #include <clientversion.h>
 #include <compat.h>
 #include <consensus/consensus.h>
+#include <crypto/hkdf_sha256_32.h>
 #include <crypto/sha256.h>
 #include <fs.h>
 #include <i2p.h>
@@ -25,6 +26,7 @@
 #include <protocol.h>
 #include <random.h>
 #include <scheduler.h>
+#include <support/cleanse.h>
 #include <util/sock.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -440,6 +442,38 @@ static CAddress GetBindAddress(SOCKET sock)
         }
     }
     return addr_bind;
+}
+
+bool DeriveBIP324Keys(ECDHSecret&& ecdh_secret, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, BIP324Keys& derived_keys)
+{
+    if (ecdh_secret.size() != ECDH_SECRET_SIZE) {
+        return false;
+    }
+
+    std::string salt{"bitcoin_v2_shared_secret"};
+    salt += std::string{reinterpret_cast<const char*>(initiator_hdata.data()), initiator_hdata.size()};
+    salt += std::string{reinterpret_cast<const char*>(responder_hdata.data()), responder_hdata.size()};
+    salt += std::string{reinterpret_cast<const char*>(Params().MessageStart()), CMessageHeader::MESSAGE_START_SIZE};
+
+    CHKDF_HMAC_SHA256_L32 hkdf(ecdh_secret.data(), ecdh_secret.size(), salt);
+
+    derived_keys.initiator_F.resize(BIP324_KEY_LEN);
+    hkdf.Expand32("initiator_F", derived_keys.initiator_F.data());
+
+    derived_keys.initiator_V.resize(BIP324_KEY_LEN);
+    hkdf.Expand32("initiator_V", derived_keys.initiator_V.data());
+
+    derived_keys.responder_F.resize(BIP324_KEY_LEN);
+    hkdf.Expand32("responder_F", derived_keys.responder_F.data());
+
+    derived_keys.responder_V.resize(BIP324_KEY_LEN);
+    hkdf.Expand32("responder_V", derived_keys.responder_V.data());
+
+    derived_keys.session_id.resize(BIP324_KEY_LEN);
+    hkdf.Expand32("session_id", derived_keys.session_id.data());
+
+    memory_cleanse(ecdh_secret.data(), ecdh_secret.size());
+    return true;
 }
 
 CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCountFailure, ConnectionType conn_type)
