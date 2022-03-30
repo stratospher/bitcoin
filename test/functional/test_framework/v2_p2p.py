@@ -4,13 +4,16 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Class for v2 P2P protocol (see BIP 324)"""
 
+import csv
 import os
+import unittest
 
-from .chacha20_poly1305_ae import ChaCha20Poly1305AE
+from .chacha20_poly1305_ae import ChaCha20Poly1305AE, HEADER_LEN
 from .ellsq import ellsq_decode, ellsq_encode
 from .key import hkdf_expand, hkdf_extract, ECDH, ECKey
 
 MAGIC_BYTES = {
+    "mainnet": b"\xf9\xbe\xb4\xd9",  # mainnet
     "regtest": b"\xfa\xbf\xb5\xda"   # regtest
 }
 
@@ -117,8 +120,8 @@ class V2P2PEncryption:
         ecdh_secret = ECDH(Y, self.__privkey).shared_secret()
         self.initialize_v2_transport(ecdh_secret, self.ellsq_pubkey, ellsq_Y)
 
-    def initialize_v2_transport(self, ecdh_secret, ellsq_X, ellsq_Y):
-        salt = b"bitcoin_v2_shared_secret" + ellsq_X + ellsq_Y + MAGIC_BYTES["regtest"]
+    def initialize_v2_transport(self, ecdh_secret, ellsq_X, ellsq_Y, net_magic="regtest"):
+        salt = b"bitcoin_v2_shared_secret" + ellsq_X + ellsq_Y + MAGIC_BYTES[net_magic]
         prk = hkdf_extract(salt, bytes.fromhex(ecdh_secret))
         del ecdh_secret # We no longer need the ECDH secret
 
@@ -166,3 +169,62 @@ class V2P2PEncryption:
         if ignore or len(ret) >= 2**23: # messages need to be rejected - return length to clear recvbuf
             return len(ret), b""
         return len(ret), ret
+
+class TestFrameworkP2PEncryption(unittest.TestCase):
+    def test_bip324_testvectors(self):
+        """Implement BIP324 test vectors (read from bip324_test_vectors.csv)."""
+        vectors_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'bip324_test_vectors.csv')
+        with open(vectors_file, newline='', encoding='utf8') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)
+            for row in reader:
+                (initiator_privkey, responder_privkey, initiator_ellsq_r32, responder_ellsq_r32,
+                 initiator_ellsq, responder_ellsq, shared_ecdh_secret,
+                 initiator_F, initiator_V, responder_F, responder_V, session_id,
+                 initiator_plaintext, initiator_ciphertext_mac_0, initiator_ciphertext_mac_999,
+                 responder_plaintext, responder_ciphertext_mac_0, responder_ciphertext_mac_999) = row
+
+                curr_initiator_privkey = ECKey()
+                curr_initiator_privkey.set(bytearray.fromhex(initiator_privkey), True)
+                curr_initiator_pubkey = curr_initiator_privkey.get_pubkey()
+
+                curr_initiator_ellsq = ellsq_encode(curr_initiator_pubkey, bytearray.fromhex(initiator_ellsq_r32))
+                self.assertEqual(initiator_ellsq, curr_initiator_ellsq.hex())
+
+                curr_responder_privkey = ECKey()
+                curr_responder_privkey.set(bytearray.fromhex(responder_privkey), True)
+                curr_responder_pubkey = curr_responder_privkey.get_pubkey()
+
+                curr_responder_ellsq = ellsq_encode(curr_responder_pubkey, bytearray.fromhex(responder_ellsq_r32))
+                self.assertEqual(responder_ellsq, curr_responder_ellsq.hex())
+
+                initiator_ecdh_secret = ECDH(curr_responder_pubkey, curr_initiator_privkey).shared_secret()
+                responder_ecdh_secret = ECDH(curr_initiator_pubkey, curr_responder_privkey).shared_secret()
+
+                self.assertEqual(initiator_ecdh_secret, responder_ecdh_secret)
+                self.assertEqual(initiator_ecdh_secret, shared_ecdh_secret)
+                self.assertEqual(responder_ecdh_secret, shared_ecdh_secret)
+
+                v2_p2p = V2P2PEncryption(initiating=True)
+                v2_p2p.initialize_v2_transport(initiator_ecdh_secret, curr_initiator_ellsq, curr_responder_ellsq, net_magic="mainnet")
+                self.assertEqual(v2_p2p.send_F.hex(), initiator_F)
+                self.assertEqual(v2_p2p.send_V.hex(), initiator_V)
+                self.assertEqual(v2_p2p.recv_F.hex(), responder_F)
+                self.assertEqual(v2_p2p.recv_V.hex(), responder_V)
+                self.assertEqual(v2_p2p.sid.hex(), session_id)
+
+                initiator_plaintext = bytearray.fromhex(initiator_plaintext)
+                for i in range(1000):
+                    _, ciphertext_mac = v2_p2p.enc_chacha20poly1305ae.crypt(True, initiator_plaintext, len(initiator_plaintext)-HEADER_LEN)
+                    if i == 0:
+                        self.assertEqual(ciphertext_mac.hex(), initiator_ciphertext_mac_0)
+                    elif i == 999:
+                        self.assertEqual(ciphertext_mac.hex(), initiator_ciphertext_mac_999)
+
+                responder_plaintext = bytearray.fromhex(responder_plaintext)
+                for i in range(1000):
+                    _, ciphertext_mac = v2_p2p.dec_chacha20poly1305ae.crypt(True, responder_plaintext, len(responder_plaintext)-HEADER_LEN)
+                    if i == 0:
+                        self.assertEqual(ciphertext_mac.hex(), responder_ciphertext_mac_0)
+                    elif i == 999:
+                        self.assertEqual(ciphertext_mac.hex(), responder_ciphertext_mac_999)
