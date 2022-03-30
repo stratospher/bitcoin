@@ -79,6 +79,7 @@ TEST_FRAMEWORK_MODULES = [
     "script",
     "segwit_addr",
     "util",
+    "v2_p2p",
 ]
 
 EXTENDED_SCRIPTS = [
