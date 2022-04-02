@@ -60,6 +60,34 @@ def modsqrt(a, p):
         return sqrt
     return None
 
+SECP256K1_FIELD_SIZE = 2**256 - 2**32 - 977
+
+class fe:
+    """Prime field over 2^256 - 2^32 - 977"""
+    def __init__(self, x):
+        self.val = x % SECP256K1_FIELD_SIZE
+
+    def __add__     (self, o): return fe(self.val + o.val)
+    def __eq__      (self, o): return self.val == o.val
+    def __hash__    (self   ): return id(self)
+    def __mul__     (self, o): return fe(self.val * o.val)
+    def __neg__     (self   ): return fe(-self.val)
+    def __pow__     (self, s): return fe(pow(self.val, s, SECP256K1_FIELD_SIZE))
+    def __sub__     (self, o): return fe(self.val - o.val)
+    def __truediv__ (self, o): return fe(self.val * o.invert().val)
+
+    def invert      (self   ):
+        return fe(modinv(self.val, SECP256K1_FIELD_SIZE))
+    def is_odd(self): return (self.val & 1) != 0
+    def is_square(self):
+        return jacobi_symbol(self.val, SECP256K1_FIELD_SIZE) >= 0
+    def sqrt(self):
+        return fe(modsqrt(self.val, SECP256K1_FIELD_SIZE))
+
+    @staticmethod
+    def from_bytes(b): return fe(int.from_bytes(b, 'big'))
+    def to_bytes(self): return self.val.to_bytes(32, 'big')
+
 class EllipticCurve:
     def __init__(self, p, a, b):
         """Initialize elliptic curve y^2 = x^3 + a*x + b over GF(p)."""
@@ -94,6 +122,10 @@ class EllipticCurve:
         z2 = pow(z1, 2, self.p)
         z4 = pow(z2, 2, self.p)
         return z1 != 0 and (pow(x1, 3, self.p) + self.a * x1 * z4 + self.b * z2 * z4 - pow(y1, 2, self.p)) % self.p == 0
+
+    def is_infinity(self, p1):
+        """Return true if Jacobian tuple p is at infinity"""
+        return p1[2] == 0
 
     def is_x_coord(self, x):
         """Test whether x is a valid X coordinate on the curve."""
@@ -212,7 +244,6 @@ class EllipticCurve:
                     r = self.add(r, p)
         return r
 
-SECP256K1_FIELD_SIZE = 2**256 - 2**32 - 977
 SECP256K1 = EllipticCurve(SECP256K1_FIELD_SIZE, 0, 7)
 SECP256K1_G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798, 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8, 1)
 SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
@@ -249,6 +280,14 @@ class ECPubKey():
         else:
             self.valid = False
 
+    def set_from_curve_point(self, curve_point):
+        x, y = fe(curve_point[0]), fe(curve_point[1])
+        if y.val % 2 == 0:
+            compressed_sec = b'\x02' + x.val.to_bytes(32, 'big')
+        else:
+            compressed_sec = b'\x03' + x.val.to_bytes(32, 'big')
+        self.set(compressed_sec)
+
     @property
     def is_compressed(self):
         return self.compressed
@@ -266,6 +305,11 @@ class ECPubKey():
             return bytes([0x02 + (p[1] & 1)]) + p[0].to_bytes(32, 'big')
         else:
             return bytes([0x04]) + p[0].to_bytes(32, 'big') + p[1].to_bytes(32, 'big')
+
+    def get_group_element(self):
+        assert(self.valid)
+        p = SECP256K1.affine(self.p)
+        return fe(p[0]), fe(p[1])
 
     def verify_ecdsa(self, sig, msg, low_s=True):
         """Verify a strictly DER-encoded ECDSA signature against this pubkey.
