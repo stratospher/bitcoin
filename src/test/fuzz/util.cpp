@@ -6,6 +6,7 @@
 #include <net_processing.h>
 #include <netmessagemaker.h>
 #include <pubkey.h>
+#include <random.h>
 #include <test/fuzz/util.h>
 #include <test/util/script.h>
 #include <util/overflow.h>
@@ -222,7 +223,7 @@ bool FuzzedSock::IsConnected(std::string& errmsg) const
 void FillNode(FuzzedDataProvider& fuzzed_data_provider, ConnmanTestMsg& connman, PeerManager& peerman, CNode& node) noexcept
 {
     const bool successfully_connected{fuzzed_data_provider.ConsumeBool()};
-    const ServiceFlags remote_services = ConsumeWeakEnum(fuzzed_data_provider, ALL_SERVICE_FLAGS);
+    const ServiceFlags remote_services = node.nServices;
     const NetPermissionFlags permission_flags = ConsumeWeakEnum(fuzzed_data_provider, ALL_NET_PERMISSION_FLAGS);
     const int32_t version = fuzzed_data_provider.ConsumeIntegralInRange<int32_t>(MIN_PEER_PROTO_VERSION, std::numeric_limits<int32_t>::max());
     const bool relay_txs{fuzzed_data_provider.ConsumeBool()};
@@ -269,6 +270,33 @@ void FillNode(FuzzedDataProvider& fuzzed_data_provider, ConnmanTestMsg& connman,
             peerman.SendMessages(&node);
         }
         assert(node.fSuccessfullyConnected == true);
+    }
+}
+
+void InitTestV2P2P(FuzzedDataProvider& fuzzed_data_provider, CNode& p2p_node, ConnmanTestMsg& connman) noexcept
+{
+    bool initiating = !p2p_node.IsInboundConn();
+    auto ecdh_secret_bytes = fuzzed_data_provider.ConsumeBytes<uint8_t>(ECDH_SECRET_SIZE);
+    ecdh_secret_bytes.resize(ECDH_SECRET_SIZE);
+    ECDHSecret ecdh_secret;
+    ecdh_secret.resize(ECDH_SECRET_SIZE);
+    std::copy(ecdh_secret_bytes.begin(), ecdh_secret_bytes.end(), ecdh_secret.begin());
+    auto initiator_hdata = fuzzed_data_provider.ConsumeBytes<uint8_t>(ELLSQ_ENCODED_SIZE);
+    initiator_hdata.resize(ELLSQ_ENCODED_SIZE);
+    auto responder_hdata = fuzzed_data_provider.ConsumeBytes<uint8_t>(ELLSQ_ENCODED_SIZE);
+    responder_hdata.resize(ELLSQ_ENCODED_SIZE);
+
+    BIP324Keys v2_keys;
+    DeriveBIP324Keys(std::move(ecdh_secret), initiator_hdata, responder_hdata, v2_keys);
+
+    if (initiating) {
+        p2p_node.m_deserializer = std::make_unique<V2TransportDeserializer>(V2TransportDeserializer(p2p_node.GetId(), v2_keys.responder_F, v2_keys.responder_V));
+        p2p_node.m_serializer = std::make_unique<V2TransportSerializer>(V2TransportSerializer(v2_keys.initiator_F, v2_keys.initiator_V));
+        connman.v2_serializers[p2p_node.GetId()] = std::make_unique<V2TransportSerializer>(v2_keys.responder_F, v2_keys.responder_V);
+    } else {
+        p2p_node.m_deserializer = std::make_unique<V2TransportDeserializer>(V2TransportDeserializer(p2p_node.GetId(), v2_keys.initiator_F, v2_keys.initiator_V));
+        p2p_node.m_serializer = std::make_unique<V2TransportSerializer>(V2TransportSerializer(v2_keys.responder_F, v2_keys.responder_V));
+        connman.v2_serializers[p2p_node.GetId()] = std::make_unique<V2TransportSerializer>(v2_keys.initiator_F, v2_keys.initiator_V);
     }
 }
 

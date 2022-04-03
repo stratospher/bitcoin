@@ -10,17 +10,21 @@
 #include <common/bloom.h>
 #include <compat.h>
 #include <consensus/amount.h>
+#include <crypto/chacha_poly_aead.h>
 #include <crypto/siphash.h>
 #include <hash.h>
 #include <i2p.h>
+#include <key.h>
 #include <net_permissions.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <policy/feerate.h>
 #include <protocol.h>
+#include <pubkey.h>
 #include <random.h>
 #include <span.h>
 #include <streams.h>
+#include <support/allocators/secure.h>
 #include <sync.h>
 #include <threadinterrupt.h>
 #include <uint256.h>
@@ -36,6 +40,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <utility>
 #include <vector>
 
 class AddrMan;
@@ -86,11 +91,19 @@ static constexpr bool DEFAULT_FIXEDSEEDS{true};
 static const size_t DEFAULT_MAXRECEIVEBUFFER = 5 * 1000;
 static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
+static constexpr bool DEFAULT_V2_TRANSPORT{false};
+static constexpr uint32_t V2_IGNORE_BIT_MASK = (1 << 23);
+
 typedef int64_t NodeId;
 
-struct AddedNodeInfo
+struct AddedNodeParams
 {
-    std::string strAddedNode;
+    std::string m_added_node;
+    bool m_use_p2p_v2;
+};
+
+struct AddedNodeInfo {
+    AddedNodeParams m_params;
     CService resolvedAddress;
     bool fConnected;
     bool fInbound;
@@ -323,7 +336,7 @@ public:
     /** read and deserialize data, advances msg_bytes data pointer */
     virtual int Read(Span<const uint8_t>& msg_bytes) = 0;
     // decomposes a message from the context
-    virtual CNetMessage GetMessage(std::chrono::microseconds time, bool& reject_message) = 0;
+    virtual CNetMessage GetMessage(std::chrono::microseconds time, bool& reject_message, bool& disconnect) = 0;
     virtual ~TransportDeserializer() {}
 };
 
@@ -387,7 +400,63 @@ public:
         }
         return ret;
     }
-    CNetMessage GetMessage(std::chrono::microseconds time, bool& reject_message) override;
+    CNetMessage GetMessage(std::chrono::microseconds time, bool& reject_message, bool& disconnect) override;
+};
+
+/** V2TransportDeserializer is a transport deserializer after BIP324 */
+class V2TransportDeserializer final : public TransportDeserializer
+{
+private:
+    std::unique_ptr<ChaCha20Poly1305AEAD> m_aead;
+    const NodeId m_node_id;                       // Only for logging
+    bool m_in_data = false;                       // parsing header (false) or data (true)
+    size_t m_message_size = 0;                    // expected message size
+    CDataStream vRecv;                            // received message data (encrypted length, payload ciphertext, MAC tag)
+    size_t m_hdr_pos = 0;                         // read pos in header
+    size_t m_data_pos = 0;                        // read pos in data
+    bool m_processed_version_placeholder = false; // BIP324 version message has been received
+    bool m_ignore_bit = false;                    // whether the ignore bit was set in the header
+
+public:
+    V2TransportDeserializer(const NodeId node_id, CPrivKey& k1, CPrivKey& k2) : m_aead(new ChaCha20Poly1305AEAD(Span<unsigned char>(k1.data(), k1.size()), Span<unsigned char>(k2.data(), k2.size()))), m_node_id(node_id), vRecv(SER_NETWORK, INIT_PROTO_VERSION)
+    {
+        Reset();
+    }
+
+    void Reset()
+    {
+        vRecv.clear();
+        vRecv.resize(CHACHA20_POLY1305_AEAD_AAD_LEN);
+        m_in_data = false;
+        m_hdr_pos = 0;
+        m_message_size = 0;
+        m_data_pos = 0;
+        m_ignore_bit = false;
+    }
+    bool Complete() const override
+    {
+        if (!m_in_data) {
+            return false;
+        }
+        return (m_message_size + CHACHA20_POLY1305_AEAD_TAG_LEN == m_data_pos);
+    }
+    void SetVersion(int nVersionIn) override
+    {
+        vRecv.SetVersion(nVersionIn);
+    }
+    int readHeader(Span<const uint8_t> msg_bytes);
+    int readData(Span<const uint8_t> msg_bytes);
+    int Read(Span<const uint8_t>& msg_bytes) override
+    {
+        int ret = m_in_data ? readData(msg_bytes) : readHeader(msg_bytes);
+        if (ret < 0) {
+            Reset();
+        } else {
+            msg_bytes = msg_bytes.subspan(ret);
+        }
+        return ret;
+    }
+    CNetMessage GetMessage(const std::chrono::microseconds time, bool& reject_message, bool& disconnect) override;
 };
 
 /** The TransportSerializer prepares messages for the network transport
@@ -395,20 +464,50 @@ public:
 class TransportSerializer {
 public:
     // prepare message for transport (header construction, error-correction computation, payload encryption, etc.)
-    virtual void prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) = 0;
+    virtual bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) = 0;
     virtual ~TransportSerializer() {}
 };
 
 class V1TransportSerializer  : public TransportSerializer {
 public:
-    void prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) override;
+    bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) override;
 };
+
+class V2TransportSerializer : public TransportSerializer
+{
+private:
+    std::unique_ptr<ChaCha20Poly1305AEAD> m_aead;
+    CPrivKey m_aead_k1; //keep the keys for a later rekeying
+    CPrivKey m_aead_k2;
+
+public:
+    V2TransportSerializer(CPrivKey& k1, CPrivKey& k2) : m_aead(new ChaCha20Poly1305AEAD(Span<unsigned char>(k1.data(), k1.size()), Span<unsigned char>(k2.data(), k2.size()))), m_aead_k1(k1), m_aead_k2(k2)
+    {
+    }
+    // prepare for next message
+    bool prepareForTransport(CSerializedNetMsg& msg, std::vector<unsigned char>& header) override;
+};
+
+constexpr size_t BIP324_KEY_LEN = 32;
+
+using BIP324Key = CPrivKey;
+
+struct BIP324Keys {
+    BIP324Key initiator_F;
+    BIP324Key initiator_V;
+    BIP324Key responder_F;
+    BIP324Key responder_V;
+    BIP324Key session_id;
+};
+
+// Returns false if the ecdh_secret is malformed.
+bool DeriveBIP324Keys(ECDHSecret&& ecdh_secret, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, BIP324Keys& derived_keys);
 
 /** Information about a peer */
 class CNode
 {
     friend class CConnman;
-    friend struct ConnmanTestMsg;
+    friend class ConnmanTestMsg;
 
 public:
     std::unique_ptr<TransportDeserializer> m_deserializer;
@@ -481,6 +580,7 @@ public:
     const uint64_t nKeyedNetGroup;
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
+    std::atomic_bool tried_v2_handshake{false};
 
     bool IsOutboundOrBlockRelayConn() const {
         switch (m_conn_type) {
@@ -519,6 +619,11 @@ public:
 
     bool IsInboundConn() const {
         return m_conn_type == ConnectionType::INBOUND;
+    }
+
+    bool PreferV2Conn() const
+    {
+        return SupportsV2Transport(nServices) && SupportsV2Transport(nLocalServices);
     }
 
     bool ExpectServicesFromConn() const {
@@ -582,6 +687,8 @@ public:
     /** Lowest measured round-trip time. Used as an inbound peer eviction
      * criterium in CConnman::AttemptToEvictConnection. */
     std::atomic<std::chrono::microseconds> m_min_ping_time{std::chrono::microseconds::max()};
+
+    EllSqPubKey hdata_ellsq_pubkey;
 
     CNode(NodeId id, ServiceFlags nLocalServicesIn, std::shared_ptr<Sock> sock, const CAddress& addrIn, uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn, const CAddress& addrBindIn, const std::string& addrNameIn, ConnectionType conn_type_in, bool inbound_onion);
     CNode(const CNode&) = delete;
@@ -654,6 +761,9 @@ public:
         m_min_ping_time = std::min(m_min_ping_time.load(), ping_time);
     }
 
+    void InitV2P2P(const CPubKey& peer_pubkey, const Span<uint8_t> initiator_hdata, const Span<uint8_t> responder_hdata, bool initiating);
+    void EnsureInitV2Key(bool initiating);
+
 private:
     const NodeId id;
     const uint64_t nLocalHostNonce;
@@ -678,6 +788,7 @@ private:
     const ServiceFlags nLocalServices;
 
     std::list<CNetMessage> vRecvMsg; // Used only by SocketHandler thread
+    CKey v2_priv_key;
 
     // Our address, as reported by the peer
     CService addrLocal GUARDED_BY(m_addr_local_mutex);
@@ -695,6 +806,9 @@ class NetEventsInterface
 public:
     /** Initialize a peer (setup state, queue any initial messages) */
     virtual void InitializeNode(CNode* pnode) = 0;
+
+    /** Initialize the P2P protocol with a peer */
+    virtual void InitP2P(CNode& pnode, bool peer_tx_relay) = 0;
 
     /** Handle removal of a peer (clear state) */
     virtual void FinalizeNode(const CNode& node) = 0;
@@ -780,13 +894,17 @@ public:
         vWhitelistedRange = connOptions.vWhitelistedRange;
         {
             LOCK(m_added_nodes_mutex);
-            m_added_nodes = connOptions.m_added_nodes;
+
+            for (const std::string& strAddedNode : connOptions.m_added_nodes) {
+                // -addnode cli arg does not currently have a way to signal BIP324 support
+                m_added_nodes.push_back({strAddedNode, false});
+            }
         }
         m_onion_binds = connOptions.onion_binds;
     }
 
     CConnman(uint64_t seed0, uint64_t seed1, AddrMan& addrman, bool network_active = true);
-    ~CConnman();
+    virtual ~CConnman();
     bool Start(CScheduler& scheduler, const Options& options);
 
     void StopThreads();
@@ -807,6 +925,7 @@ public:
     bool ForNode(NodeId id, std::function<bool(CNode* pnode)> func);
 
     void PushMessage(CNode* pnode, CSerializedNetMsg&& msg);
+    void PushV2EllSqPubkey(CNode* pnode);
 
     using NodeFn = std::function<void(CNode*)>;
     void ForEachNode(const NodeFn& func)
@@ -864,7 +983,7 @@ public:
     // Count the number of block-relay-only peers we have over our limit.
     int GetExtraBlockRelayCount() const;
 
-    bool AddNode(const std::string& node);
+    bool AddNode(const AddedNodeParams& added_node_params);
     bool RemoveAddedNode(const std::string& node);
     std::vector<AddedNodeInfo> GetAddedNodeInfo() const;
 
@@ -894,7 +1013,7 @@ public:
     //!
     //! The data returned by this is used in CNode construction,
     //! which is used to advertise which services we are offering
-    //! that peer during `net_processing.cpp:PushNodeVersion()`.
+    //! that peer during `net_processing.cpp:InitP2P()`.
     ServiceFlags GetLocalServices() const;
 
     uint64_t GetMaxOutboundTarget() const;
@@ -1085,7 +1204,10 @@ private:
     AddrMan& addrman;
     std::deque<std::string> m_addr_fetches GUARDED_BY(m_addr_fetches_mutex);
     Mutex m_addr_fetches_mutex;
-    std::vector<std::string> m_added_nodes GUARDED_BY(m_added_nodes_mutex);
+
+    // connection string and whether to use v2 p2p
+    std::vector<AddedNodeParams> m_added_nodes GUARDED_BY(m_added_nodes_mutex);
+
     mutable Mutex m_added_nodes_mutex;
     std::vector<CNode*> m_nodes GUARDED_BY(m_nodes_mutex);
     std::list<CNode*> m_nodes_disconnected;
@@ -1246,7 +1368,7 @@ private:
     };
 
     friend struct CConnmanTest;
-    friend struct ConnmanTestMsg;
+    friend class ConnmanTestMsg;
 };
 
 /** Dump binary message to file, with timestamp */

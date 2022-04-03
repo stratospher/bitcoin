@@ -5,6 +5,7 @@
 #include <key.h>
 
 #include <key_io.h>
+#include <random.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
 #include <uint256.h>
@@ -342,6 +343,52 @@ BOOST_AUTO_TEST_CASE(bip340_test_vectors)
             BOOST_CHECK(tweaked_key.VerifySchnorr(msg256, sig64));
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(key_ellsq)
+{
+    for (auto secret : {strSecret1, strSecret2, strSecret1C, strSecret2C}) {
+        CKey key = DecodeSecret(secret);
+        BOOST_CHECK(key.IsValid());
+
+        std::array<uint8_t, 32> rnd32;
+        GetRandBytes(rnd32.data(), 32);
+        auto original_pubkey = key.GetPubKey();
+        auto ellsq_encoded_pubkey = original_pubkey.EllSqEncode(rnd32);
+        assert(ellsq_encoded_pubkey.has_value());
+
+        CPubKey decoded_pubkey = CPubKey{ellsq_encoded_pubkey.value()};
+        if (!key.IsCompressed()) {
+            // The decoding constructor returns a compressed pubkey. If the
+            // original was uncompressed, we must decompress the decoded one
+            // to compare.
+            decoded_pubkey.Decompress();
+        }
+        BOOST_CHECK(original_pubkey == decoded_pubkey);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ecdh)
+{
+    CKey initiator_key = DecodeSecret(strSecret1);
+    CKey responder_key = DecodeSecret(strSecret2C);
+
+    ECDHSecret initiator_secret, responder_secret;
+    BOOST_CHECK(initiator_key.ComputeECDHSecret(responder_key.GetPubKey(), initiator_secret));
+    BOOST_CHECK(responder_key.ComputeECDHSecret(initiator_key.GetPubKey(), responder_secret));
+    BOOST_CHECK_EQUAL(initiator_secret.size(), ECDH_SECRET_SIZE);
+    BOOST_CHECK_EQUAL(responder_secret.size(), ECDH_SECRET_SIZE);
+    BOOST_CHECK_EQUAL(0, memcmp(initiator_secret.data(), responder_secret.data(), ECDH_SECRET_SIZE));
+    BOOST_CHECK_EQUAL("265d994050fcf0c31c948b5e46cb9a5be7f373912d5d2bdf3fcfe053caa6a644", HexStr(initiator_secret));
+    BOOST_CHECK_EQUAL("265d994050fcf0c31c948b5e46cb9a5be7f373912d5d2bdf3fcfe053caa6a644", HexStr(responder_secret));
+
+    // ECDH computation with invalid pubkey
+    std::vector<unsigned char> pubkeydata;
+    auto responder_pubkey = responder_key.GetPubKey();
+    pubkeydata.insert(pubkeydata.end(), responder_pubkey.begin(), responder_pubkey.end());
+    pubkeydata[0] = 0xFF;
+    CPubKey invalid_responder_pubkey(pubkeydata);
+    BOOST_CHECK(!initiator_key.ComputeECDHSecret(invalid_responder_pubkey, initiator_secret));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
