@@ -4,6 +4,7 @@
 
 #include <chainparams.h>
 #include <chainparamsbase.h>
+#include <key.h>
 #include <net.h>
 #include <net_permissions.h>
 #include <netaddress.h>
@@ -76,4 +77,36 @@ FUZZ_TARGET_INIT(net, initialize_net)
     const NetPermissionFlags net_permission_flags = ConsumeWeakEnum(fuzzed_data_provider, ALL_NET_PERMISSION_FLAGS);
     (void)node.HasPermission(net_permission_flags);
     (void)node.ConnectedThroughNetwork();
+}
+
+void initialize_chainparams()
+{
+    SelectParams(CBaseChainParams::REGTEST);
+}
+
+FUZZ_TARGET_INIT(bip324, initialize_chainparams)
+{
+    FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
+
+    ECDHSecret ecdh_secret;
+    ecdh_secret.resize(ECDH_SECRET_SIZE);
+    auto ecdh_secret_bytes = fuzzed_data_provider.ConsumeBytes<uint8_t>(ECDH_SECRET_SIZE);
+    ecdh_secret_bytes.resize(ECDH_SECRET_SIZE);
+
+    memcpy(ecdh_secret.data(), ecdh_secret_bytes.data(), ECDH_SECRET_SIZE);
+
+    auto initiator_hdata_len = fuzzed_data_provider.ConsumeIntegralInRange(0, 4096);
+    auto initiator_hdata = fuzzed_data_provider.ConsumeBytes<uint8_t>(initiator_hdata_len);
+
+    auto responder_hdata_len = fuzzed_data_provider.ConsumeIntegralInRange(0, 4096);
+    auto responder_hdata = fuzzed_data_provider.ConsumeBytes<uint8_t>(responder_hdata_len);
+
+    BIP324Keys keys;
+    assert(DeriveBIP324Keys(std::move(ecdh_secret), initiator_hdata, responder_hdata, keys));
+    assert(keys.initiator_F.size() == BIP324_KEY_LEN);
+    assert(keys.initiator_V.size() == BIP324_KEY_LEN);
+    assert(keys.responder_F.size() == BIP324_KEY_LEN);
+    assert(keys.responder_V.size() == BIP324_KEY_LEN);
+    assert(keys.session_id.size() == BIP324_KEY_LEN);
+    assert("0000000000000000000000000000000000000000000000000000000000000000" == HexStr(ecdh_secret));
 }

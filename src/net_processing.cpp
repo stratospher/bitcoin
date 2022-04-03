@@ -348,6 +348,7 @@ public:
 
     /** Implement NetEventsInterface */
     void InitializeNode(CNode* pnode) override;
+    void InitP2P(CNode& pnode, bool peer_tx_relay) override;
     void FinalizeNode(const CNode& node) override;
     bool ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt) override;
     bool SendMessages(CNode* pto) override EXCLUSIVE_LOCKS_REQUIRED(pto->cs_sendProcessing);
@@ -424,9 +425,6 @@ private:
      *  passed to TxRequestTracker. */
     void AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
-    /** Send a version message to a peer */
-    void PushNodeVersion(CNode& pnode, const Peer& peer);
 
     /** Send a ping message every PING_INTERVAL or if requested via RPC. May
      *  mark the peer to be disconnected if a ping has timed out.
@@ -1158,7 +1156,7 @@ void PeerManagerImpl::FindNextBlocksToDownload(NodeId nodeid, unsigned int count
 
 } // namespace
 
-void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
+void PeerManagerImpl::InitP2P(CNode& pnode, bool peer_tx_relay)
 {
     // Note that pnode->GetLocalServices() is a reflection of the local
     // services we were offering when the CNode object was created for this
@@ -1173,7 +1171,7 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
     CService addr_you = addr.IsRoutable() && !IsProxy(addr) && addr.IsAddrV1Compatible() ? addr : CService();
     uint64_t your_services{addr.nServices};
 
-    const bool tx_relay = !m_ignore_incoming_txs && peer.m_tx_relay != nullptr && !pnode.IsFeelerConn();
+    const bool tx_relay = !m_ignore_incoming_txs && peer_tx_relay && !pnode.IsFeelerConn();
     m_connman.PushMessage(&pnode, CNetMsgMaker(INIT_PROTO_VERSION).Make(NetMsgType::VERSION, PROTOCOL_VERSION, my_services, nTime,
             your_services, addr_you, // Together the pre-version-31402 serialization of CAddress "addrYou" (without nTime)
             my_services, CService(), // Together the pre-version-31402 serialization of CAddress "addrMe" (without nTime)
@@ -1235,8 +1233,8 @@ void PeerManagerImpl::InitializeNode(CNode *pnode)
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
     }
-    if (!pnode->IsInboundConn()) {
-        PushNodeVersion(*pnode, *peer);
+    if (!pnode->IsInboundConn() && !pnode->PreferV2Conn()) {
+        InitP2P(*pnode, peer->m_tx_relay != nullptr);
     }
 }
 
@@ -2675,7 +2673,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // Inbound peers send us their version message when they connect.
         // We send our version message in response.
         if (pfrom.IsInboundConn()) {
-            PushNodeVersion(pfrom, *peer);
+            InitP2P(pfrom, peer->m_tx_relay != nullptr);
         }
 
         // Change version

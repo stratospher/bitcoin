@@ -28,6 +28,8 @@ bench_bench_bitcoin_SOURCES = \
   bench/data.cpp \
   bench/data.h \
   bench/duplicate_inputs.cpp \
+  bench/ellsq.cpp \
+  bench/ecdh.cpp \
   bench/examples.cpp \
   bench/gcs_filter.cpp \
   bench/hashpadding.cpp \
