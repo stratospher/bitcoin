@@ -1566,6 +1566,10 @@ void V2Transport::MarkBytesSent(size_t bytes_sent) noexcept
     LOCK(m_send_mutex);
     if (m_send_state == SendState::V1) return m_v1_fallback.MarkBytesSent(bytes_sent);
 
+    if (m_send_state == SendState::AWAITING_KEY && m_send_pos == 0 && bytes_sent > 0) {
+        LogPrint(BCLog::NET, "start sending v2 handshake to peer=%d\n", m_nodeid);
+    }
+
     m_send_pos += bytes_sent;
     Assume(m_send_pos <= m_send_buffer.size());
     if (m_send_pos >= CMessageHeader::HEADER_SIZE) {
@@ -1968,6 +1972,7 @@ void CConnman::DisconnectNodes()
                         /*grant=*/std::move(pnode->grantOutbound),
                         /*dest=*/pnode->m_dest,
                         /*conn_type=*/pnode->m_conn_type);
+                    LogPrint(BCLog::NET, "retrying with v1 transport protocol for peer=%d\n", pnode->GetId());
                 }
 
                 // release outbound grant (if any)
