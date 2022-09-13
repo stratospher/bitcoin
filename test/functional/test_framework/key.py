@@ -347,6 +347,10 @@ class ECPubKey():
         else:
             return self.p.to_bytes_uncompressed()
 
+    def get_group_element(self):
+        assert self.is_valid
+        return self.p
+
     def verify_ecdsa(self, sig, msg, low_s=True):
         """Verify a strictly DER-encoded ECDSA signature against this pubkey.
 

@@ -7,7 +7,9 @@
 WARNING: This code is slow and uses bad randomness.
 Do not use for anything but tests."""
 
-from .key import FE, GE
+import hashlib
+
+from .key import ECPubKey, FE, GE
 
 C1 = FE(-3).sqrt()
 C2 = -(C1 - FE(1))/2
@@ -76,3 +78,60 @@ def reverse_map(x, u, i):
     u = u * C2 + x
     t = w * u
     return t
+
+def encode(P, hasher):
+    cnt = 0
+    while True:
+        if cnt % 64 == 0:
+            hash = hasher.copy()
+            hash.update(cnt.to_bytes(4, 'little'))
+            cnt += 1
+            branch_hash = hash.digest()
+
+        j = (branch_hash[(64-cnt) % 64 >> 1] >> (((64-cnt) % 64 & 1) << 2)) & 7
+        hash = hasher.copy()
+        hash.update(cnt.to_bytes(4, 'little'))
+        cnt += 1
+        u = FE(int.from_bytes(hash.digest(), 'big'))
+        if u == FE(0):
+            continue
+        t = reverse_map(P.x, u, j)
+        if t is None:
+            continue
+        if t.is_even() != P.y.is_even():
+            t = -t
+        return u.to_bytes() + t.to_bytes()
+
+def ellswift_create(privkey, rnd32=bytearray(32)):
+    """
+    generates elligator swift encoding of pubkey
+    with privkey also used as entropy
+    Parameters:
+        privkey : ECKey object
+        randombytes : 32 bytes entropy
+    Returns: 64 bytes encoding
+    """
+    m = hashlib.sha256()
+    m.update(b"secp256k1_ellswift_create")
+    m.update(bytearray(7))
+    m.update(privkey.get_bytes())
+    m.update(rnd32)
+    m.update(bytearray(19))
+    pubkey = privkey.get_pubkey()
+    return encode(pubkey.get_group_element(), m)
+
+def ellswift_decode(enc):
+    """
+     decodes elligator swift encoding to obtain pubkey
+     Parameters:
+         enc : 64 bytes encoding
+     Returns: ECPubKey object
+     """
+    u, t = FE.from_bytes(enc[:32]), FE.from_bytes(enc[32:])
+    x = forward_map(u, t)
+    curve_point = GE.lift_x(x)
+    if not t.is_even():
+        curve_point = -curve_point
+    pubkey = ECPubKey()
+    pubkey.set(curve_point.to_bytes_compressed())
+    return pubkey
