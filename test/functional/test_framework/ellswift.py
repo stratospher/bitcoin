@@ -7,9 +7,11 @@
 WARNING: This code is slow and uses bad randomness.
 Do not use for anything but tests."""
 
+import os
 import hashlib
+import unittest
 
-from .key import ECPubKey, FE, GE
+from .key import ECKey, ECPubKey, FE, GE
 
 C1 = FE(-3).sqrt()
 C2 = -(C1 - FE(1))/2
@@ -135,3 +137,14 @@ def ellswift_decode(enc):
     pubkey = ECPubKey()
     pubkey.set(curve_point.to_bytes_compressed())
     return pubkey
+
+class TestFrameworkEllSwift(unittest.TestCase):
+    def test_create_decode(self):
+        for _ in range(32):
+            privkey = ECKey()
+            privkey.generate()
+            pubkey1 = privkey.get_pubkey()
+            rnd32 = os.urandom(32)
+            encoding = ellswift_create(privkey, rnd32)
+            pubkey2 = ellswift_decode(encoding)
+            assert pubkey1.get_bytes() == pubkey2.get_bytes()
