@@ -138,6 +138,11 @@ def ellswift_decode(enc):
     pubkey.set(curve_point.to_bytes_compressed())
     return pubkey
 
+def ellswift_ecdh_xonly(ellswift_theirs, secretkey):
+    their_pubkey = ellswift_decode(ellswift_theirs)
+    our_privkey = int.from_bytes(secretkey.get_bytes(), "big")
+    return (our_privkey * their_pubkey.get_group_element()).x.to_bytes()
+
 class TestFrameworkEllSwift(unittest.TestCase):
     def test_create_decode(self):
         for _ in range(32):
@@ -148,3 +153,17 @@ class TestFrameworkEllSwift(unittest.TestCase):
             encoding = ellswift_create(privkey, rnd32)
             pubkey2 = ellswift_decode(encoding)
             assert pubkey1.get_bytes() == pubkey2.get_bytes()
+
+    def test_ellswift_ecdh_xonly(self):
+        for _ in range(32):
+            randombytes1 = os.urandom(32)
+            randombytes2 = os.urandom(32)
+            privkey1 = ECKey()
+            privkey1.generate()
+            privkey2 = ECKey()
+            privkey2.generate()
+            encoding1 = ellswift_create(privkey1, randombytes1)
+            encoding2 = ellswift_create(privkey2, randombytes2)
+            shared_secret1 = ellswift_ecdh_xonly(encoding1, privkey2)
+            shared_secret2 = ellswift_ecdh_xonly(encoding2, privkey1)
+            assert shared_secret1 == shared_secret2
