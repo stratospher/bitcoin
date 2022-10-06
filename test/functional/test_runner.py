@@ -73,6 +73,7 @@ TEST_EXIT_SKIPPED = 77
 # the output of `git grep unittest.TestCase ./test/functional/test_framework`
 TEST_FRAMEWORK_MODULES = [
     "address",
+    "bip324_cipher",
     "blocktools",
     "chacha20",
     "ellswift",
