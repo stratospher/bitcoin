@@ -78,6 +78,7 @@ TEST_FRAMEWORK_MODULES = [
     "ellswift",
     "key",
     "muhash",
+    "poly1305",
     "ripemd160",
     "script",
     "segwit_addr",
