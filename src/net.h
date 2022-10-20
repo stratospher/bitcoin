@@ -233,6 +233,7 @@ public:
     Network m_network;
     uint32_t m_mapped_as;
     ConnectionType m_conn_type;
+    TransportProtocolType m_transport_type;
 };
 
 
@@ -439,6 +440,7 @@ struct CNodeOptions
     std::unique_ptr<i2p::sam::Session> i2p_sam_session = nullptr;
     bool prefer_evict = false;
     bool prefer_p2p_v2 = false;
+    TransportProtocolType transport_type = TransportProtocolType::V1;
 };
 
 struct BIP324Session {
@@ -544,6 +546,7 @@ public:
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
     std::unique_ptr<BIP324SharedState> m_bip324_shared_state;
+    TransportProtocolType m_transport_type;
 
     bool IsOutboundOrBlockRelayConn() const {
         switch (m_conn_type) {
