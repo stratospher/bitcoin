@@ -23,7 +23,7 @@ typedef struct {
 #define SECP256K1_GE_CONST_INFINITY {SECP256K1_FE_CONST(0, 0, 0, 0, 0, 0, 0, 0), SECP256K1_FE_CONST(0, 0, 0, 0, 0, 0, 0, 0), 1}
 
 /** A group element of the secp256k1 curve, in jacobian coordinates.
- *  Note: For exhastive test mode, sepc256k1 is replaced by a small subgroup of a different curve.
+ *  Note: For exhastive test mode, secp256k1 is replaced by a small subgroup of a different curve.
  */
 typedef struct {
     secp256k1_fe x; /* actual X: x/z^2 */
@@ -50,6 +50,12 @@ static void secp256k1_ge_set_xy(secp256k1_ge *r, const secp256k1_fe *x, const se
 /** Set a group element (affine) equal to the point with the given X coordinate, and given oddness
  *  for Y. Return value indicates whether the result is valid. */
 static int secp256k1_ge_set_xo_var(secp256k1_ge *r, const secp256k1_fe *x, int odd);
+
+/** Determine whether x is a valid X coordinate on the curve. */
+static int secp256k1_ge_x_on_curve_var(const secp256k1_fe *x);
+
+/** Determine whether fraction xn/xd is a valid X coordinate on the curve. */
+static int secp256k1_ge_x_frac_on_curve_var(const secp256k1_fe *xn, const secp256k1_fe *xd);
 
 /** Check whether a group element is the point at infinity. */
 static int secp256k1_ge_is_infinity(const secp256k1_ge *a);
@@ -96,6 +102,9 @@ static void secp256k1_gej_set_infinity(secp256k1_gej *r);
 
 /** Set a group element (jacobian) equal to another which is given in affine coordinates. */
 static void secp256k1_gej_set_ge(secp256k1_gej *r, const secp256k1_ge *a);
+
+/** Check two group elements (jacobian) for equality in variable time. */
+static int secp256k1_gej_eq_var(const secp256k1_gej *a, const secp256k1_gej *b);
 
 /** Compare the X coordinate of a group element (jacobian). */
 static int secp256k1_gej_eq_x_var(const secp256k1_fe *x, const secp256k1_gej *a);
