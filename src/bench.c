@@ -121,6 +121,22 @@ static void bench_sign_run(void* arg, int iters) {
     }
 }
 
+static void bench_keygen_run(void* arg, int iters) {
+    int i;
+    bench_sign_data *data = (bench_sign_data*)arg;
+
+    for (i = 0; i < iters; i++) {
+        unsigned char pub33[33];
+        size_t len = 33;
+        secp256k1_pubkey pubkey;
+        CHECK(secp256k1_ec_pubkey_create(data->ctx, &pubkey, data->key));
+        CHECK(secp256k1_ec_pubkey_serialize(data->ctx, pub33, &len, &pubkey, SECP256K1_EC_COMPRESSED));
+        memcpy(data->key, pub33 + 1, 32);
+        data->key[17] ^= i;
+    }
+}
+
+
 #ifdef ENABLE_MODULE_ECDH
 # include "modules/ecdh/bench_impl.h"
 #endif
@@ -131,6 +147,10 @@ static void bench_sign_run(void* arg, int iters) {
 
 #ifdef ENABLE_MODULE_SCHNORRSIG
 # include "modules/schnorrsig/bench_impl.h"
+#endif
+
+#ifdef ENABLE_MODULE_ELLSWIFT
+# include "modules/ellswift/bench_impl.h"
 #endif
 
 int main(int argc, char** argv) {
@@ -145,7 +165,9 @@ int main(int argc, char** argv) {
 
     /* Check for invalid user arguments */
     char* valid_args[] = {"ecdsa", "verify", "ecdsa_verify", "sign", "ecdsa_sign", "ecdh", "recover",
-                         "ecdsa_recover", "schnorrsig", "schnorrsig_verify", "schnorrsig_sign"};
+                         "ecdsa_recover", "schnorrsig", "schnorrsig_verify", "schnorrsig_sign", "ec",
+                         "keygen", "ec_keygen", "ellswift", "encode", "ellswift_encode", "decode",
+                         "ellswift_decode", "ellswift_keygen", "ellswift_ecdh"};
     size_t valid_args_size = sizeof(valid_args)/sizeof(valid_args[0]);
     int invalid_args = have_invalid_args(argc, argv, valid_args, valid_args_size);
 
@@ -164,7 +186,7 @@ int main(int argc, char** argv) {
 
 /* Check if the user tries to benchmark optional module without building it */
 #ifndef ENABLE_MODULE_ECDH
-    if (have_flag(argc, argv, "ecdh")) { 
+    if (have_flag(argc, argv, "ecdh")) {
         fprintf(stderr, "./bench: ECDH module not enabled.\n");
         fprintf(stderr, "Use ./configure --enable-module-ecdh.\n\n");
         return 1;
@@ -172,7 +194,7 @@ int main(int argc, char** argv) {
 #endif
 
 #ifndef ENABLE_MODULE_RECOVERY
-    if (have_flag(argc, argv, "recover") || have_flag(argc, argv, "ecdsa_recover")) { 
+    if (have_flag(argc, argv, "recover") || have_flag(argc, argv, "ecdsa_recover")) {
         fprintf(stderr, "./bench: Public key recovery module not enabled.\n");
         fprintf(stderr, "Use ./configure --enable-module-recovery.\n\n");
         return 1;
@@ -180,15 +202,15 @@ int main(int argc, char** argv) {
 #endif
 
 #ifndef ENABLE_MODULE_SCHNORRSIG
-    if (have_flag(argc, argv, "schnorrsig") || have_flag(argc, argv, "schnorrsig_sign") || have_flag(argc, argv, "schnorrsig_verify")) { 
+    if (have_flag(argc, argv, "schnorrsig") || have_flag(argc, argv, "schnorrsig_sign") || have_flag(argc, argv, "schnorrsig_verify")) {
         fprintf(stderr, "./bench: Schnorr signatures module not enabled.\n");
         fprintf(stderr, "Use ./configure --enable-module-schnorrsig.\n\n");
         return 1;
     }
 #endif
 
-    /* ECDSA verification benchmark */
-    data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    /* ECDSA benchmark */
+    data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
 
     for (i = 0; i < 32; i++) {
         data.msg[i] = 1 + i;
@@ -206,12 +228,8 @@ int main(int argc, char** argv) {
     print_output_table_header_row();
     if (d || have_flag(argc, argv, "ecdsa") || have_flag(argc, argv, "verify") || have_flag(argc, argv, "ecdsa_verify")) run_benchmark("ecdsa_verify", bench_verify, NULL, NULL, &data, 10, iters);
 
-    secp256k1_context_destroy(data.ctx);
-
-    /* ECDSA signing benchmark */
-    data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-
     if (d || have_flag(argc, argv, "ecdsa") || have_flag(argc, argv, "sign") || have_flag(argc, argv, "ecdsa_sign")) run_benchmark("ecdsa_sign", bench_sign_run, bench_sign_setup, NULL, &data, 10, iters);
+    if (d || have_flag(argc, argv, "ec") || have_flag(argc, argv, "keygen") || have_flag(argc, argv, "ec_keygen")) run_benchmark("ec_keygen", bench_keygen_run, bench_sign_setup, NULL, &data, 10, iters);
 
     secp256k1_context_destroy(data.ctx);
 
@@ -228,6 +246,11 @@ int main(int argc, char** argv) {
 #ifdef ENABLE_MODULE_SCHNORRSIG
     /* Schnorr signature benchmarks */
     run_schnorrsig_bench(iters, argc, argv);
+#endif
+
+#ifdef ENABLE_MODULE_ELLSWIFT
+    /* ElligatorSwift benchmarks */
+    run_ellswift_bench(iters, argc, argv);
 #endif
 
     return 0;

@@ -236,6 +236,13 @@ static void secp256k1_gej_set_ge(secp256k1_gej *r, const secp256k1_ge *a) {
    secp256k1_fe_set_int(&r->z, 1);
 }
 
+static int secp256k1_gej_eq_var(const secp256k1_gej *a, const secp256k1_gej *b) {
+    secp256k1_gej tmp;
+    secp256k1_gej_neg(&tmp, a);
+    secp256k1_gej_add_var(&tmp, &tmp, b, NULL);
+    return secp256k1_gej_is_infinity(&tmp);
+}
+
 static int secp256k1_gej_eq_x_var(const secp256k1_fe *x, const secp256k1_gej *a) {
     secp256k1_fe r, r2;
     VERIFY_CHECK(!a->infinity);
@@ -693,6 +700,35 @@ static int secp256k1_ge_is_in_correct_subgroup(const secp256k1_ge* ge) {
     /* The real secp256k1 group has cofactor 1, so the subgroup is the entire curve. */
     return 1;
 #endif
+}
+
+static int secp256k1_ge_x_on_curve_var(const secp256k1_fe* x)
+{
+    secp256k1_fe c;
+    secp256k1_fe_sqr(&c, x);
+    secp256k1_fe_mul(&c, &c, x);
+    secp256k1_fe_add(&c, &secp256k1_fe_const_b);
+    return secp256k1_fe_jacobi_var(&c) >= 0;
+}
+
+static int secp256k1_ge_x_frac_on_curve_var(const secp256k1_fe* xn, const secp256k1_fe* xd) {
+    /* We want to determine whether (xn/xd) is on the curve.
+     *
+     * (xn/xd)^3 + 7 is square <=> xd*xn^3 + 7*xd^4 is square (multiplying by xd^4, a square).
+     */
+     secp256k1_fe r, t;
+     secp256k1_fe_mul(&r, xd, xn); /* r = xd*xn */
+     secp256k1_fe_sqr(&t, xn); /* t = xn^2 */
+     secp256k1_fe_mul(&r, &r, &t); /* r = xd*xn^3 */
+     secp256k1_fe_sqr(&t, xd); /* t = xd^2 */
+     secp256k1_fe_sqr(&t, &t); /* t = xd^4 */
+#if defined(EXHAUSTIVE_GROUP_ORDER)
+     secp256k1_fe_mul(&t, &t, &secp256k1_fe_const_b); /* t = 7*xd^4 */
+#else
+     secp256k1_fe_mul_int(&t, 7);
+#endif
+     secp256k1_fe_add(&r, &t); /* r = xd*xn^3 + 7*xd^4 */
+     return secp256k1_fe_jacobi_var(&r) >= 0;
 }
 
 #endif /* SECP256K1_GROUP_IMPL_H */

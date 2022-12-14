@@ -48,6 +48,12 @@ noinst_HEADERS += src/precomputed_ecmult.h
 noinst_HEADERS += src/precomputed_ecmult_gen.h
 noinst_HEADERS += src/assumptions.h
 noinst_HEADERS += src/util.h
+noinst_HEADERS += src/int128.h
+noinst_HEADERS += src/int128_impl.h
+noinst_HEADERS += src/int128_native.h
+noinst_HEADERS += src/int128_native_impl.h
+noinst_HEADERS += src/int128_struct.h
+noinst_HEADERS += src/int128_struct_impl.h
 noinst_HEADERS += src/scratch.h
 noinst_HEADERS += src/scratch_impl.h
 noinst_HEADERS += src/selftest.h
@@ -58,7 +64,6 @@ noinst_HEADERS += src/hash_impl.h
 noinst_HEADERS += src/field.h
 noinst_HEADERS += src/field_impl.h
 noinst_HEADERS += src/bench.h
-noinst_HEADERS += src/basic-config.h
 noinst_HEADERS += contrib/lax_der_parsing.h
 noinst_HEADERS += contrib/lax_der_parsing.c
 noinst_HEADERS += contrib/lax_der_privatekey_parsing.h
@@ -87,7 +92,7 @@ endif
 endif
 
 libsecp256k1_la_SOURCES = src/secp256k1.c
-libsecp256k1_la_CPPFLAGS = -I$(top_srcdir)/include -I$(top_srcdir)/src $(SECP_INCLUDES)
+libsecp256k1_la_CPPFLAGS = $(SECP_INCLUDES)
 libsecp256k1_la_LIBADD = $(SECP_LIBS) $(COMMON_LIB) $(PRECOMPUTED_LIB)
 libsecp256k1_la_LDFLAGS = -no-undefined -version-info $(LIB_VERSION_CURRENT):$(LIB_VERSION_REVISION):$(LIB_VERSION_AGE)
 
@@ -112,7 +117,7 @@ TESTS =
 if USE_TESTS
 noinst_PROGRAMS += tests
 tests_SOURCES = src/tests.c
-tests_CPPFLAGS = -I$(top_srcdir)/src -I$(top_srcdir)/include $(SECP_INCLUDES) $(SECP_TEST_INCLUDES)
+tests_CPPFLAGS = $(SECP_INCLUDES) $(SECP_TEST_INCLUDES)
 if VALGRIND_ENABLED
 tests_CPPFLAGS += -DVALGRIND
 noinst_PROGRAMS += valgrind_ctime_test
@@ -227,4 +232,8 @@ endif
 
 if ENABLE_MODULE_SCHNORRSIG
 include src/modules/schnorrsig/Makefile.am.include
+endif
+
+if ENABLE_MODULE_ELLSWIFT
+include src/modules/ellswift/Makefile.am.include
 endif
