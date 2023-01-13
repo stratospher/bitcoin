@@ -18,10 +18,6 @@
  *    imply normality.
  */
 
-#if defined HAVE_CONFIG_H
-#include "libsecp256k1-config.h"
-#endif
-
 #include "util.h"
 
 #if defined(SECP256K1_WIDEMUL_INT128)
@@ -138,5 +134,8 @@ static void secp256k1_fe_half(secp256k1_fe *r);
 /** Sets each limb of 'r' to its upper bound at magnitude 'm'. The output will also have its
  *  magnitude set to 'm' and is normalized if (and only if) 'm' is zero. */
 static void secp256k1_fe_get_bounds(secp256k1_fe *r, int m);
+
+/** Compute the Jacobi symbol of a / p. 0 if a=0; 1 if a square; -1 if a non-square. */
+static int secp256k1_fe_jacobi_var(const secp256k1_fe *a);
 
 #endif /* SECP256K1_FIELD_H */
