@@ -1,6 +1,7 @@
 env:
   ### compiler options
   HOST:
+  WRAPPER_CMD:
   # Specific warnings can be disabled with -Wno-error=foo.
   # -pedantic-errors is not equivalent to -Werror=pedantic and thus not implied by -Werror according to the GCC manual.
   WERROR_CFLAGS: -Werror -pedantic-errors
@@ -18,6 +19,7 @@ env:
   ECDH: no
   RECOVERY: no
   SCHNORRSIG: no
+  ELLSWIFT: no
   ### test options
   SECP256K1_TEST_ITERS:
   BENCH: yes
@@ -71,12 +73,12 @@ task:
   << : *LINUX_CONTAINER
   matrix: &ENV_MATRIX
     - env: {WIDEMUL:  int64,  RECOVERY: yes}
-    - env: {WIDEMUL:  int64,                 ECDH: yes, SCHNORRSIG: yes}
+    - env: {WIDEMUL:  int64,                 ECDH: yes, SCHNORRSIG: yes, ELLSWIFT: yes}
     - env: {WIDEMUL: int128}
-    - env: {WIDEMUL: int128_struct}
-    - env: {WIDEMUL: int128,  RECOVERY: yes,            SCHNORRSIG: yes}
+    - env: {WIDEMUL: int128_struct,                                      ELLSWIFT: yes}
+    - env: {WIDEMUL: int128,  RECOVERY: yes,            SCHNORRSIG: yes, ELLSWIFT: yes}
     - env: {WIDEMUL: int128,                 ECDH: yes, SCHNORRSIG: yes}
-    - env: {WIDEMUL: int128,  ASM: x86_64}
+    - env: {WIDEMUL: int128,  ASM: x86_64                              , ELLSWIFT: yes}
     - env: {                  RECOVERY: yes,            SCHNORRSIG: yes}
     - env: {BUILD: distcheck, WITH_VALGRIND: no, CTIMETEST: no, BENCH: no}
     - env: {CPPFLAGS: -DDETERMINISTIC}
@@ -150,6 +152,7 @@ task:
     ECDH: yes
     RECOVERY: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
     CTIMETEST: no
   << : *MERGE_BASE
   test_script:
@@ -169,6 +172,7 @@ task:
     ECDH: yes
     RECOVERY: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
     CTIMETEST: no
   matrix:
     - env: {}
@@ -189,6 +193,7 @@ task:
     ECDH: yes
     RECOVERY: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
     CTIMETEST: no
   << : *MERGE_BASE
   test_script:
@@ -206,6 +211,7 @@ task:
     ECDH: yes
     RECOVERY: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
     CTIMETEST: no
   << : *MERGE_BASE
   test_script:
@@ -243,6 +249,7 @@ task:
     RECOVERY: yes
     EXPERIMENTAL: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
     CTIMETEST: no
     # Use a MinGW-w64 host to tell ./configure we're building for Windows.
     # This will detect some MinGW-w64 tools but then make will need only
@@ -282,6 +289,7 @@ task:
     ECDH: yes
     RECOVERY: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
     CTIMETEST: no
   matrix:
     - name: "Valgrind (memcheck)"
@@ -356,6 +364,7 @@ task:
     ECDH: yes
     RECOVERY: yes
     SCHNORRSIG: yes
+    ELLSWIFT: yes
   << : *MERGE_BASE
   test_script:
     - ./ci/cirrus.sh
