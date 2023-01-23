@@ -7,10 +7,6 @@
 #ifndef SECP256K1_MODINV32_H
 #define SECP256K1_MODINV32_H
 
-#if defined HAVE_CONFIG_H
-#include "libsecp256k1-config.h"
-#endif
-
 #include "util.h"
 
 /* A signed 30-bit limb representation of integers.
@@ -38,5 +34,9 @@ static void secp256k1_modinv32_var(secp256k1_modinv32_signed30 *x, const secp256
 
 /* Same as secp256k1_modinv32_var, but constant time in x (not in the modulus). */
 static void secp256k1_modinv32(secp256k1_modinv32_signed30 *x, const secp256k1_modinv32_modinfo *modinfo);
+
+/* Compute the Jacobi symbol for (x | modinfo->modulus). Either x must be 0, or x must be coprime with
+ * modulus. All limbs of x must be non-negative. Returns -2 if the result cannot be computed. */
+static int secp256k1_jacobi32_maybe_var(const secp256k1_modinv32_signed30 *x, const secp256k1_modinv32_modinfo *modinfo);
 
 #endif /* SECP256K1_MODINV32_H */

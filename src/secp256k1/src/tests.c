@@ -4,10 +4,6 @@
  * file COPYING or https://www.opensource.org/licenses/mit-license.php.*
  ***********************************************************************/
 
-#if defined HAVE_CONFIG_H
-#include "libsecp256k1-config.h"
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -156,8 +152,7 @@ int context_eq(const secp256k1_context *a, const secp256k1_context *b) {
     return a->declassify == b->declassify
             && ecmult_gen_context_eq(&a->ecmult_gen_ctx, &b->ecmult_gen_ctx)
             && a->illegal_callback.fn == b->illegal_callback.fn
-            && a->illegal_callback.data == b->illegal_callback.
-data
+            && a->illegal_callback.data == b->illegal_callback.data
             && a->error_callback.fn == b->error_callback.fn
             && a->error_callback.data == b->error_callback.data;
 }
@@ -927,12 +922,32 @@ void test_modinv32_uint16(uint16_t* out, const uint16_t* in, const uint16_t* mod
     uint16_to_signed30(&x, in);
     nonzero = (x.v[0] | x.v[1] | x.v[2] | x.v[3] | x.v[4] | x.v[5] | x.v[6] | x.v[7] | x.v[8]) != 0;
     uint16_to_signed30(&m.modulus, mod);
-    mutate_sign_signed30(&m.modulus);
 
     /* compute 1/modulus mod 2^30 */
     m.modulus_inv30 = modinv2p64(m.modulus.v[0]) & 0x3fffffff;
     CHECK(((m.modulus_inv30 * m.modulus.v[0]) & 0x3fffffff) == 1);
 
+    /* Test secp256k1_jacobi32_maybe_var. */
+    {
+        int jac;
+        uint16_t sqr[16], negone[16];
+        mulmod256(sqr, in, in, mod);
+        uint16_to_signed30(&x, sqr);
+        /* Compute jacobi symbol of in^2, which must be 0 or 1 (or uncomputable). */
+        jac = secp256k1_jacobi32_maybe_var(&x, &m);
+        CHECK(jac == -2 || jac == nonzero);
+        /* Then compute the jacobi symbol of -(in^2). x and -x have opposite
+         * jacobi symbols if and only if (mod % 4) == 3. */
+        negone[0] = mod[0] - 1;
+        for (i = 1; i < 16; ++i) negone[i] = mod[i];
+        mulmod256(sqr, sqr, negone, mod);
+        uint16_to_signed30(&x, sqr);
+        jac = secp256k1_jacobi32_maybe_var(&x, &m);
+        CHECK(jac == -2 || jac == (1 - (mod[0] & 2)) * nonzero);
+    }
+
+    uint16_to_signed30(&x, in);
+    mutate_sign_signed30(&m.modulus);
     for (vartime = 0; vartime < 2; ++vartime) {
         /* compute inverse */
         (vartime ? secp256k1_modinv32_var : secp256k1_modinv32)(&x, &m);
@@ -1000,12 +1015,32 @@ void test_modinv64_uint16(uint16_t* out, const uint16_t* in, const uint16_t* mod
     uint16_to_signed62(&x, in);
     nonzero = (x.v[0] | x.v[1] | x.v[2] | x.v[3] | x.v[4]) != 0;
     uint16_to_signed62(&m.modulus, mod);
-    mutate_sign_signed62(&m.modulus);
 
     /* compute 1/modulus mod 2^62 */
     m.modulus_inv62 = modinv2p64(m.modulus.v[0]) & M62;
     CHECK(((m.modulus_inv62 * m.modulus.v[0]) & M62) == 1);
 
+    /* Test secp256k1_jacobi64_maybe_var. */
+    {
+        int jac;
+        uint16_t sqr[16], negone[16];
+        mulmod256(sqr, in, in, mod);
+        uint16_to_signed62(&x, sqr);
+        /* Compute jacobi symbol of in^2, which must be 0 or 1 (or uncomputable). */
+        jac = secp256k1_jacobi64_maybe_var(&x, &m);
+        CHECK(jac == -2 || jac == nonzero);
+        /* Then compute the jacobi symbol of -(in^2). x and -x have opposite
+         * jacobi symbols if and only if (mod % 4) == 3. */
+        negone[0] = mod[0] - 1;
+        for (i = 1; i < 16; ++i) negone[i] = mod[i];
+        mulmod256(sqr, sqr, negone, mod);
+        uint16_to_signed62(&x, sqr);
+        jac = secp256k1_jacobi64_maybe_var(&x, &m);
+        CHECK(jac == -2 || jac == (1 - (mod[0] & 2)) * nonzero);
+    }
+
+    uint16_to_signed62(&x, in);
+    mutate_sign_signed62(&m.modulus);
     for (vartime = 0; vartime < 2; ++vartime) {
         /* compute inverse */
         (vartime ? secp256k1_modinv64_var : secp256k1_modinv64)(&x, &m);
@@ -1786,7 +1821,7 @@ void load256i128(uint16_t* out, const secp256k1_int128* v) {
     uint64_t lo;
     int64_t hi;
     secp256k1_int128 c = *v;
-    lo = secp256k1_i128_to_i64(&c);
+    lo = secp256k1_i128_to_u64(&c);
     secp256k1_i128_rshift(&c, 64);
     hi = secp256k1_i128_to_i64(&c);
     load256two64(out, hi, lo, 1);
@@ -1903,12 +1938,14 @@ void run_int128_test_case(void) {
     secp256k1_i128_rshift(&swz, uc % 127);
     load256i128(rswz, &swz);
     CHECK(secp256k1_memcmp_var(rswr, rswz, 16) == 0);
-    /* test secp256k1_i128_to_i64 */
-    CHECK((uint64_t)secp256k1_i128_to_i64(&swa) == v[0]);
+    /* test secp256k1_i128_to_u64 */
+    CHECK(secp256k1_i128_to_u64(&swa) == v[0]);
     /* test secp256k1_i128_from_i64 */
     secp256k1_i128_from_i64(&swz, sb);
     load256i128(rswz, &swz);
     CHECK(secp256k1_memcmp_var(rsb, rswz, 16) == 0);
+    /* test secp256k1_i128_to_i64 */
+    CHECK(secp256k1_i128_to_i64(&swz) == sb);
     /* test secp256k1_i128_eq_var */
     {
         int expect = (uc & 1);
@@ -1925,7 +1962,7 @@ void run_int128_test_case(void) {
         }
         CHECK(secp256k1_i128_eq_var(&swa, &swz) == expect);
     }
-    /* test secp256k1_i128_check_pow2 */
+    /* test secp256k1_i128_check_pow2 (sign == 1) */
     {
         int expect = (uc & 1);
         int pos = ub % 127;
@@ -1948,7 +1985,33 @@ void run_int128_test_case(void) {
             }
             swz = swa;
         }
-        CHECK(secp256k1_i128_check_pow2(&swz, pos) == expect);
+        CHECK(secp256k1_i128_check_pow2(&swz, pos, 1) == expect);
+    }
+    /* test secp256k1_i128_check_pow2 (sign == -1) */
+    {
+        int expect = (uc & 1);
+        int pos = ub % 127;
+        if (expect) {
+            /* If expect==1, set swz to exactly -(2 << pos). */
+            uint64_t hi = ~(uint64_t)0;
+            uint64_t lo = ~(uint64_t)0;
+            if (pos & 64) {
+                hi <<= (pos & 63);
+                lo = 0;
+            } else {
+                lo <<= (pos & 63);
+            }
+            secp256k1_i128_load(&swz, hi, lo);
+        } else {
+            /* If expect==0, set swz = swa, but update expect=1 if swa happens to equal -(2 << pos). */
+            if (pos & 64) {
+                if ((v[1] == ((~(uint64_t)0) << (pos & 63))) && v[0] == 0) expect = 1;
+            } else {
+                if ((v[0] == ((~(uint64_t)0) << (pos & 63))) && v[1] == ~(uint64_t)0) expect = 1;
+            }
+            swz = swa;
+        }
+        CHECK(secp256k1_i128_check_pow2(&swz, pos, -1) == expect);
     }
 }
 
@@ -1968,20 +2031,20 @@ void run_int128_tests(void) {
         /* Compute INT128_MAX = 2^127 - 1 with secp256k1_i128_accum_mul */
         secp256k1_i128_mul(&res, INT64_MAX, INT64_MAX);
         secp256k1_i128_accum_mul(&res, INT64_MAX, INT64_MAX);
-        CHECK(secp256k1_i128_to_i64(&res) == 2);
+        CHECK(secp256k1_i128_to_u64(&res) == 2);
         secp256k1_i128_accum_mul(&res, 4, 9223372036854775807);
         secp256k1_i128_accum_mul(&res, 1, 1);
-        CHECK((uint64_t)secp256k1_i128_to_i64(&res) == UINT64_MAX);
+        CHECK(secp256k1_i128_to_u64(&res) == UINT64_MAX);
         secp256k1_i128_rshift(&res, 64);
         CHECK(secp256k1_i128_to_i64(&res) == INT64_MAX);
 
         /* Compute INT128_MIN = - 2^127 with secp256k1_i128_accum_mul */
         secp256k1_i128_mul(&res, INT64_MAX, INT64_MIN);
-        CHECK(secp256k1_i128_to_i64(&res) == INT64_MIN);
+        CHECK(secp256k1_i128_to_u64(&res) == (uint64_t)INT64_MIN);
         secp256k1_i128_accum_mul(&res, INT64_MAX, INT64_MIN);
-        CHECK(secp256k1_i128_to_i64(&res) == 0);
+        CHECK(secp256k1_i128_to_u64(&res) == 0);
         secp256k1_i128_accum_mul(&res, 2, INT64_MIN);
-        CHECK(secp256k1_i128_to_i64(&res) == 0);
+        CHECK(secp256k1_i128_to_u64(&res) == 0);
         secp256k1_i128_rshift(&res, 64);
         CHECK(secp256k1_i128_to_i64(&res) == INT64_MIN);
     }
@@ -3136,8 +3199,10 @@ void run_sqrt(void) {
         for (j = 0; j < count; j++) {
             random_fe(&x);
             secp256k1_fe_sqr(&s, &x);
+            CHECK(secp256k1_fe_jacobi_var(&s) == 1);
             test_sqrt(&s, &x);
             secp256k1_fe_negate(&t, &s, 1);
+            CHECK(secp256k1_fe_jacobi_var(&t) == -1);
             test_sqrt(&t, NULL);
             secp256k1_fe_mul(&t, &s, &ns);
             test_sqrt(&t, NULL);
@@ -3518,7 +3583,7 @@ void test_ge(void) {
      */
     secp256k1_ge *ge = (secp256k1_ge *)checked_malloc(&ctx->error_callback, sizeof(secp256k1_ge) * (1 + 4 * runs));
     secp256k1_gej *gej = (secp256k1_gej *)checked_malloc(&ctx->error_callback, sizeof(secp256k1_gej) * (1 + 4 * runs));
-    secp256k1_fe zf;
+    secp256k1_fe zf, r;
     secp256k1_fe zfi2, zfi3;
 
     secp256k1_gej_set_infinity(&gej[0]);
@@ -3559,6 +3624,11 @@ void test_ge(void) {
     secp256k1_fe_inv_var(&zfi3, &zf);
     secp256k1_fe_sqr(&zfi2, &zfi3);
     secp256k1_fe_mul(&zfi3, &zfi3, &zfi2);
+
+    /* Generate random r */
+    do {
+        random_field_element_test(&r);
+    } while(secp256k1_fe_is_zero(&r));
 
     for (i1 = 0; i1 < 1 + 4 * runs; i1++) {
         int i2;
@@ -3670,6 +3740,29 @@ void test_ge(void) {
             ge_equals_gej(&ge_set_all[i], &gej[i]);
         }
         free(ge_set_all);
+    }
+
+    /* Test all elements have X coordinates on the curve. */
+    for (i = 1; i < 4 * runs + 1; i++) {
+        secp256k1_fe n;
+        CHECK(secp256k1_ge_x_on_curve_var(&ge[i].x));
+        /* And the same holds after random rescaling. */
+        secp256k1_fe_mul(&n, &zf, &ge[i].x);
+        CHECK(secp256k1_ge_x_frac_on_curve_var(&n, &zf));
+    }
+
+    /* Test correspondence secp256k1_ge_x{,_frac}_on_curve_var with ge_set_xo. */
+    {
+        secp256k1_fe n;
+        secp256k1_ge q;
+        int ret_on_curve, ret_frac_on_curve, ret_set_xo;
+        secp256k1_fe_mul(&n, &zf, &r);
+        ret_on_curve = secp256k1_ge_x_on_curve_var(&r);
+        ret_frac_on_curve = secp256k1_ge_x_frac_on_curve_var(&n, &zf);
+        ret_set_xo = secp256k1_ge_set_xo_var(&q, &r, 0);
+        CHECK(ret_on_curve == ret_frac_on_curve);
+        CHECK(ret_on_curve == ret_set_xo);
+        if (ret_set_xo) CHECK(secp256k1_fe_equal_var(&r, &q.x));
     }
 
     /* Test batch gej -> ge conversion with many infinities. */
@@ -4279,6 +4372,68 @@ void ecmult_const_mult_zero_one(void) {
     ge_equals_ge(&res2, &point);
 }
 
+void ecmult_const_mult_xonly(void) {
+    int i;
+
+    /* Test correspondence between secp256k1_ecmult_const and secp256k1_ecmult_const_xonly. */
+    for (i = 0; i < 2*count; ++i) {
+        secp256k1_ge base;
+        secp256k1_gej basej, resj;
+        secp256k1_fe n, d, resx, v;
+        secp256k1_scalar q;
+        int res;
+        /* Random base point. */
+        random_group_element_test(&base);
+        /* Random scalar to multiply it with. */
+        random_scalar_order_test(&q);
+        /* If i is odd, n=d*base.x for random non-zero d */
+        if (i & 1) {
+            do {
+                random_field_element_test(&d);
+            } while (secp256k1_fe_normalizes_to_zero_var(&d));
+            secp256k1_fe_mul(&n, &base.x, &d);
+        } else {
+            n = base.x;
+        }
+        /* Perform x-only multiplication. */
+        res = secp256k1_ecmult_const_xonly(&resx, &n, (i & 1) ? &d : NULL, &q, 256, i & 2);
+        CHECK(res);
+        /* Perform normal multiplication. */
+        secp256k1_gej_set_ge(&basej, &base);
+        secp256k1_ecmult(&resj, &basej, &q, NULL);
+        /* Check that resj's X coordinate corresponds with resx. */
+        secp256k1_fe_sqr(&v, &resj.z);
+        secp256k1_fe_mul(&v, &v, &resx);
+        CHECK(check_fe_equal(&v, &resj.x));
+    }
+
+    /* Test that secp256k1_ecmult_const_xonly correctly rejects X coordinates not on curve. */
+    for (i = 0; i < 2*count; ++i) {
+        secp256k1_fe x, n, d, c, r;
+        int res;
+        secp256k1_scalar q;
+        random_scalar_order_test(&q);
+        /* Generate random X coordinate not on the curve. */
+        do {
+            random_field_element_test(&x);
+            secp256k1_fe_sqr(&c, &x);
+            secp256k1_fe_mul(&c, &c, &x);
+            secp256k1_fe_add(&c, &secp256k1_fe_const_b);
+        } while (secp256k1_fe_jacobi_var(&c) >= 0);
+        /* If i is odd, n=d*x for random non-zero d. */
+        if (i & 1) {
+            do {
+                random_field_element_test(&d);
+            } while (secp256k1_fe_normalizes_to_zero_var(&d));
+            secp256k1_fe_mul(&n, &x, &d);
+        } else {
+            n = x;
+        }
+        res = secp256k1_ecmult_const_xonly(&r, &n, (i & 1) ? &d : NULL, &q, 256, 0);
+        CHECK(res == 0);
+    }
+}
+
 void ecmult_const_chain_multiply(void) {
     /* Check known result (randomly generated test problem from sage) */
     const secp256k1_scalar scalar = SECP256K1_SCALAR_CONST(
@@ -4310,6 +4465,7 @@ void run_ecmult_const_tests(void) {
     ecmult_const_random_mult();
     ecmult_const_commutativity();
     ecmult_const_chain_multiply();
+    ecmult_const_mult_xonly();
 }
 
 typedef struct {
@@ -7149,6 +7305,10 @@ void run_ecdsa_edge_cases(void) {
 # include "modules/schnorrsig/tests_impl.h"
 #endif
 
+#ifdef ENABLE_MODULE_ELLSWIFT
+# include "modules/ellswift/tests_impl.h"
+#endif
+
 void run_secp256k1_memczero_test(void) {
     unsigned char buf1[6] = {1, 2, 3, 4, 5, 6};
     unsigned char buf2[sizeof(buf1)];
@@ -7455,6 +7615,10 @@ int main(int argc, char **argv) {
 
 #ifdef ENABLE_MODULE_SCHNORRSIG
     run_schnorrsig_tests();
+#endif
+
+#ifdef ENABLE_MODULE_ELLSWIFT
+    run_ellswift_tests();
 #endif
 
     /* util tests */
