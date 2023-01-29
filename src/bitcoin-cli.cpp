@@ -88,10 +88,9 @@ static void SetupCliArgs(ArgsManager& argsman)
                              "RPC generatetoaddress nblocks and maxtries arguments. Example: bitcoin-cli -generate 4 1000",
                              DEFAULT_NBLOCKS, DEFAULT_MAX_TRIES),
                    ArgsManager::ALLOW_ANY, OptionsCategory::CLI_COMMANDS);
-    argsman.AddArg("-addrinfo", "Get the number of addresses known to the node, per network and total, after filtering for quality and recency. The total number of addresses known to the node may be higher.", ArgsManager::ALLOW_ANY, OptionsCategory::CLI_COMMANDS);
+    argsman.AddArg("-addrinfo", "Get the number of addresses known to the node, per network and total.", ArgsManager::ALLOW_ANY, OptionsCategory::CLI_COMMANDS);
     argsman.AddArg("-getinfo", "Get general information from the remote server. Note that unlike server-side RPC calls, the output of -getinfo is the result of multiple non-atomic requests. Some entries in the output may represent results from different states (e.g. wallet balance may be as of a different block from the chain state reported)", ArgsManager::ALLOW_ANY, OptionsCategory::CLI_COMMANDS);
     argsman.AddArg("-netinfo", "Get network peer connection information from the remote server. An optional integer argument from 0 to 4 can be passed for different peers listings (default: 0). Pass \"help\" for detailed help documentation.", ArgsManager::ALLOW_ANY, OptionsCategory::CLI_COMMANDS);
-
     SetupChainParamsBaseOptions(argsman);
     argsman.AddArg("-color=<when>", strprintf("Color setting for CLI output (default: %s). Valid values: always, auto (add color codes when standard output is connected to a terminal and OS is not WIN32), never.", DEFAULT_COLOR_SETTING), ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-named", strprintf("Pass named instead of positional arguments (default: %s)", DEFAULT_NAMED), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -259,50 +258,105 @@ public:
 /** Process addrinfo requests */
 class AddrinfoRequestHandler : public BaseRequestHandler
 {
-private:
-    int8_t NetworkStringToId(const std::string& str) const
-    {
-        for (size_t i = 0; i < NETWORKS.size(); ++i) {
-            if (str == NETWORKS[i]) return i;
-        }
-        return UNKNOWN_NETWORK;
-    }
-
 public:
+    const int ID_ADDRINFO = 0;
+    const int ID_SERVICEINFO = 1;
+
     UniValue PrepareRequest(const std::string& method, const std::vector<std::string>& args) override
     {
         if (!args.empty()) {
             throw std::runtime_error("-addrinfo takes no arguments");
         }
-        UniValue params{RPCConvertValues("getnodeaddresses", std::vector<std::string>{{"0"}})};
-        return JSONRPCRequestObj("getnodeaddresses", params, 1);
+        UniValue result(UniValue::VARR);
+        result.push_back(JSONRPCRequestObj("getaddrmaninfo", NullUniValue, ID_ADDRINFO));
+        result.push_back(JSONRPCRequestObj("getrawaddrman", NullUniValue, ID_SERVICEINFO));
+        return result;
     }
 
-    UniValue ProcessReply(const UniValue& reply) override
+    UniValue ProcessReply(const UniValue& batch_in) override
     {
-        if (!reply["error"].isNull()) return reply;
-        const std::vector<UniValue>& nodes{reply["result"].getValues()};
-        if (!nodes.empty() && nodes.at(0)["network"].isNull()) {
-            throw std::runtime_error("-addrinfo requires bitcoind server to be running v22.0 and up");
+        const std::vector<UniValue> batch{JSONRPCProcessBatchReply(batch_in)};
+        if (!batch[ID_ADDRINFO]["error"].isNull()) return batch[ID_ADDRINFO];
+        if (!batch[ID_SERVICEINFO]["error"].isNull()) return batch[ID_SERVICEINFO];
+
+        const std::vector<std::string>& network_types{batch[ID_ADDRINFO]["result"].getKeys()};
+        const std::vector<UniValue>& addrman_counts{batch[ID_ADDRINFO]["result"].getValues()};
+        if (network_types.empty()) {
+            throw std::runtime_error("-addrinfo requires bitcoind server to be running v28.0 and up. if using an earlier bitcoind server (v22.0 - v27.0), use the appropriate binary");
         }
-        // Count the number of peers known to our node, by network.
-        std::array<uint64_t, NETWORKS.size()> counts{{}};
-        for (const UniValue& node : nodes) {
-            std::string network_name{node["network"].get_str()};
-            const int8_t network_id{NetworkStringToId(network_name)};
-            if (network_id == UNKNOWN_NETWORK) continue;
-            ++counts.at(network_id);
-        }
+
         // Prepare result to return to user.
         UniValue result{UniValue::VOBJ}, addresses{UniValue::VOBJ};
         uint64_t total{0}; // Total address count
-        for (size_t i = 1; i < NETWORKS.size() - 1; ++i) {
-            addresses.pushKV(NETWORKS[i], counts.at(i));
-            total += counts.at(i);
+        for (size_t i = 0; i < network_types.size() - 1; ++i) {
+            uint64_t addr_count = addrman_counts[i]["total"].getInt<int>();
+            addresses.pushKV(network_types[i], addr_count);
+            total += addr_count;
         }
         addresses.pushKV("total", total);
         result.pushKV("addresses_known", std::move(addresses));
-        return JSONRPCReplyObj(std::move(result), NullUniValue, /*id=*/1, JSONRPCVersion::V2);
+
+        const std::vector<std::string>& table_names{batch[ID_SERVICEINFO]["result"].getKeys()};
+        const std::vector<UniValue>& table_entries{batch[ID_SERVICEINFO]["result"].getValues()};
+
+        UniValue services(UniValue::VOBJ);
+        int t_count_network = 0, t_count_bloom = 0, t_count_witness = 0, t_count_compact_filter = 0, t_count_network_limited = 0, t_count_v2 = 0, t_total = 0;
+        for (size_t i = 0; i < table_entries.size(); ++i) {
+            const UniValue& entry = table_entries[i];
+            int count_network = 0, count_bloom = 0, count_witness = 0, count_compact_filter = 0, count_network_limited = 0, count_v2 = 0;
+            uint64_t total = entry.getValues().size();
+            for (const UniValue& bucket_position : entry.getValues()) {
+                uint64_t services = bucket_position["services"].getInt<uint64_t>();
+                if (services & (1 << 0)){
+                    count_network++;
+                }
+                if (services & (1 << 2)){
+                    count_bloom++;
+                }
+                if (services & (1 << 3)){
+                    count_witness++;
+                }
+                if (services & (1 << 6)){
+                    count_compact_filter++;
+                }
+                if (services & (1 << 10)){
+                    count_network_limited++;
+                }
+                if (services & (1 << 11)){
+                    count_v2++;
+                }
+            }
+            UniValue service_from_table(UniValue::VOBJ);
+            double frac = 100/double(total);
+            service_from_table.pushKV("% of NODE_NETWORK", count_network*frac);
+            service_from_table.pushKV("% of NODE_BLOOM", count_bloom*frac);
+            service_from_table.pushKV("% of NODE_WITNESS", count_witness*frac);
+            service_from_table.pushKV("% of NODE_COMPACT_FILTERS", count_compact_filter*frac);
+            service_from_table.pushKV("% of NODE_NETWORK_LIMITED", count_network_limited*frac);
+            service_from_table.pushKV("% of NODE_P2P_V2", count_v2*frac);
+            services.pushKV(table_names[i], service_from_table);
+
+            t_count_network += count_network;
+            t_count_bloom += count_bloom;
+            t_count_witness += count_witness;
+            t_count_compact_filter += count_compact_filter;
+            t_count_network_limited += count_network_limited;
+            t_count_v2 += count_v2;
+            t_total += total;
+        }
+
+        UniValue service_from_table(UniValue::VOBJ);
+        double frac = 100/double(t_total);
+        service_from_table.pushKV("% of NODE_NETWORK", t_count_network*frac);
+        service_from_table.pushKV("% of NODE_BLOOM", t_count_bloom*frac);
+        service_from_table.pushKV("% of NODE_WITNESS", t_count_witness*frac);
+        service_from_table.pushKV("% of NODE_COMPACT_FILTERS", t_count_compact_filter*frac);
+        service_from_table.pushKV("% of NODE_NETWORK_LIMITED", t_count_network_limited*frac);
+        service_from_table.pushKV("% of NODE_P2P_V2", t_count_v2*frac);
+        services.pushKV("TOTAL", service_from_table);
+
+        result.pushKV("services", services);
+        return JSONRPCReplyObj(std::move(result), NullUniValue,  /*id=*/1, JSONRPCVersion::V2);
     }
 };
 
