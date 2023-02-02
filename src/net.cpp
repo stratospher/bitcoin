@@ -1691,6 +1691,7 @@ void CConnman::SocketHandlerConnected(const std::vector<CNode*>& nodes,
                             // After keys are exchanged, both peers send the garbage terminator
                             // followed by the v2 encrypted message that authenticates the garbage
                             // which is currently empty as the mechanism is unused in bitcoin core.
+                            PushV2Garbage(pnode);
                             PushV2GarbageTerminator(pnode);
                             CSerializedNetMsg garbage_auth_msg;
                             PushMessage(pnode, std::move(garbage_auth_msg));
@@ -3339,6 +3340,29 @@ void CConnman::PushV2EllSwiftPubkey(CNode* pnode)
     }
 
     if (nBytesSent) RecordBytesSent(nBytesSent);
+}
+
+
+void CConnman::PushV2Garbage(CNode* pnode)
+{
+    std::vector<unsigned char> garbage{
+            0x1d, 0x5d, 0xa9, 0xfa, 0x8b, 0xd2, 0xd7, 0x30,
+            0xec, 0xa4, 0xd3, 0xac, 0x3e, 0x50, 0x15, 0x58,
+            0x4b, 0x18, 0xe1, 0x46, 0xec, 0x74, 0xb1, 0x0c,
+            0x8d, 0xb9, 0xa1, 0x40, 0xec, 0x47, 0xa4, 0xbe,
+            0xe7, 0x58, 0xf9, 0x0d, 0x24, 0x3d, 0x8f, 0xde,
+            0x78, 0x8a, 0xaf, 0xc5, 0xa2, 0x16, 0xf4, 0x8d,
+            0x07, 0x65, 0x56, 0xce, 0xf6, 0xd4, 0x3a, 0xe4,
+            0x55, 0x23, 0x11, 0x41, 0x80, 0x96, 0x5c, 0x1c,
+    };
+    {
+        LOCK(pnode->cs_vSend);
+        pnode->nSendSize += garbage.size();
+
+        // We do not have to send immediately because this is followed shortly by the
+        // transport version message
+        pnode->vSendMsg.push_back(garbage);
+    }
 }
 
 void CConnman::PushV2GarbageTerminator(CNode* pnode)

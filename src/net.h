@@ -904,7 +904,7 @@ public:
     void PushMessage(CNode* pnode, CSerializedNetMsg&& msg) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
     void PushV2EllSwiftPubkey(CNode* pnode) EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex);
     void PushV2GarbageTerminator(CNode* pnode);
-
+    void PushV2Garbage(CNode* pnode);
     using NodeFn = std::function<void(CNode*)>;
     void ForEachNode(const NodeFn& func)
     {
