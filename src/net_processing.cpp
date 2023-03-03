@@ -1147,6 +1147,11 @@ void PeerManagerImpl::UpdateChainTipSet(const CNode& node, const CBlockIndex& po
     // The new blockhash is either replacing an existing tip or we are adding a
     // new fork to the tip set.
     chain_tips.insert(&potential_new_tip);
+    for (const CBlockIndex* tip_index : chain_tips) {
+        assert(tip_index);
+        std::cout<<tip_index->nHeight<<",";
+    }
+    std::cout<<"\n";
 }
 
 bool PeerManagerImpl::IsBlockInChainTipSet(const CNode& node, const CBlockIndex& index)
