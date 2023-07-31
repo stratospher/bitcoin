@@ -3509,11 +3509,12 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         if (!pfrom.IsInboundConn()) {
             const auto mapped_as{m_connman.GetMappedAS(pfrom.addr)};
-            LogPrintf("New outbound peer connected: version: %d, blocks=%d, peer=%d%s%s (%s)\n",
+            LogPrintf("New outbound peer connected: version: %d, blocks=%d, peer=%d%s%s (%s,%s)\n",
                       pfrom.nVersion.load(), peer->m_starting_height,
                       pfrom.GetId(), (fLogIPs ? strprintf(", peeraddr=%s", pfrom.addr.ToStringAddrPort()) : ""),
                       (mapped_as ? strprintf(", mapped_as=%d", mapped_as) : ""),
-                      pfrom.ConnectionTypeAsString());
+                      pfrom.ConnectionTypeAsString(),
+                      TransportTypeAsString(pfrom.m_transport->GetInfo().transport_type));
         }
 
         if (pfrom.GetCommonVersion() >= SHORT_IDS_BLOCKS_VERSION) {
