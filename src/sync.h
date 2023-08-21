@@ -309,25 +309,33 @@ private:
     int value;
 
 public:
-    explicit CSemaphore(int init) : value(init) {}
+    explicit CSemaphore(int init) noexcept : value(init) {}
 
-    void wait()
+    // Disallow default construct, copy, move.
+    CSemaphore() = delete;
+    CSemaphore(const CSemaphore&) = delete;
+    CSemaphore(CSemaphore&&) = delete;
+    CSemaphore& operator=(const CSemaphore&) = delete;
+    CSemaphore& operator=(CSemaphore&&) = delete;
+
+    void wait() noexcept
     {
         std::unique_lock<std::mutex> lock(mutex);
         condition.wait(lock, [&]() { return value >= 1; });
         value--;
     }
 
-    bool try_wait()
+    bool try_wait() noexcept
     {
         std::lock_guard<std::mutex> lock(mutex);
-        if (value < 1)
+        if (value < 1) {
             return false;
+        }
         value--;
         return true;
     }
 
-    void post()
+    void post() noexcept
     {
         {
             std::lock_guard<std::mutex> lock(mutex);
@@ -345,45 +353,62 @@ private:
     bool fHaveGrant;
 
 public:
-    void Acquire()
+    void Acquire() noexcept
     {
-        if (fHaveGrant)
+        if (fHaveGrant) {
             return;
+        }
         sem->wait();
         fHaveGrant = true;
     }
 
-    void Release()
+    void Release() noexcept
     {
-        if (!fHaveGrant)
+        if (!fHaveGrant) {
             return;
+        }
         sem->post();
         fHaveGrant = false;
     }
 
-    bool TryAcquire()
+    bool TryAcquire() noexcept
     {
-        if (!fHaveGrant && sem->try_wait())
+        if (!fHaveGrant && sem->try_wait()) {
             fHaveGrant = true;
+        }
         return fHaveGrant;
     }
 
-    void MoveTo(CSemaphoreGrant& grant)
+    // Disallow copy.
+    CSemaphoreGrant(const CSemaphoreGrant&) = delete;
+    CSemaphoreGrant& operator=(const CSemaphoreGrant&) = delete;
+
+    // Allow move.
+    CSemaphoreGrant(CSemaphoreGrant&& other) noexcept
     {
-        grant.Release();
-        grant.sem = sem;
-        grant.fHaveGrant = fHaveGrant;
-        fHaveGrant = false;
+        sem = other.sem;
+        fHaveGrant = other.fHaveGrant;
+        other.fHaveGrant = false;
     }
 
-    CSemaphoreGrant() : sem(nullptr), fHaveGrant(false) {}
-
-    explicit CSemaphoreGrant(CSemaphore& sema, bool fTry = false) : sem(&sema), fHaveGrant(false)
+    CSemaphoreGrant& operator=(CSemaphoreGrant&& other) noexcept
     {
-        if (fTry)
+        Release();
+        sem = other.sem;
+        fHaveGrant = other.fHaveGrant;
+        other.fHaveGrant = false;
+        return *this;
+    }
+
+    CSemaphoreGrant() noexcept : sem(nullptr), fHaveGrant(false) {}
+
+    explicit CSemaphoreGrant(CSemaphore& sema, bool fTry = false) noexcept : sem(&sema), fHaveGrant(false)
+    {
+        if (fTry) {
             TryAcquire();
-        else
+        } else {
             Acquire();
+        }
     }
 
     ~CSemaphoreGrant()
@@ -391,7 +416,7 @@ public:
         Release();
     }
 
-    operator bool() const
+    explicit operator bool() const noexcept
     {
         return fHaveGrant;
     }
