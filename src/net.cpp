@@ -594,6 +594,7 @@ CNode* CConnman::ConnectNode(CAddress addrConnect, const char *pszDest, bool fCo
                                  .i2p_sam_session = std::move(i2p_transient_session),
                                  .recv_flood_size = nReceiveFloodSize,
                                  .use_v2_transport = use_p2p_v2,
+                                 .count_failure_after_reconnect = fCountFailure,
                              });
     pnode->AddRef();
 
@@ -1559,6 +1560,9 @@ void V2Transport::MarkBytesSent(size_t bytes_sent) noexcept
 
     m_send_pos += bytes_sent;
     Assume(m_send_pos <= m_send_buffer.size());
+    if (m_send_pos >= CMessageHeader::HEADER_SIZE) {
+        m_sent_v1_header_worth = true;
+    }
     // Only wipe the buffer when everything is sent in the READY state. In the AWAITING_KEY state
     // we still need the garbage that's in the send buffer to construct the garbage authentication
     // packet.
@@ -1566,6 +1570,24 @@ void V2Transport::MarkBytesSent(size_t bytes_sent) noexcept
         m_send_pos = 0;
         m_send_buffer = {};
     }
+}
+
+bool V2Transport::ShouldReconnectV1() const noexcept
+{
+    AssertLockNotHeld(m_send_mutex);
+    AssertLockNotHeld(m_recv_mutex);
+    // Only outgoing connections need reconnection.
+    if (!m_initiating) return false;
+
+    LOCK(m_recv_mutex);
+    // Only in the very first state (where m_recv_buffer.empty() means nothing received) do
+    // we reconnect.
+    if (m_recv_state != RecvState::KEY) return false;
+    // Only when nothing has been received do we reconnect.
+    if (!m_recv_buffer.empty()) return false;
+    // Check if we've sent enough for the other side to disconnect us (if it was V1).
+    LOCK(m_send_mutex);
+    return m_sent_v1_header_worth;
 }
 
 size_t V2Transport::GetSendMemoryUsage() const noexcept
@@ -1881,6 +1903,11 @@ bool CConnman::AddConnection(const std::string& address, ConnectionType conn_typ
 
 void CConnman::DisconnectNodes()
 {
+    AssertLockNotHeld(m_nodes_mutex);
+    AssertLockNotHeld(m_reconnections_mutex);
+
+    decltype(m_reconnections) reconnections_to_add;
+
     {
         LOCK(m_nodes_mutex);
 
@@ -1902,6 +1929,16 @@ void CConnman::DisconnectNodes()
             {
                 // remove from m_nodes
                 m_nodes.erase(remove(m_nodes.begin(), m_nodes.end(), pnode), m_nodes.end());
+
+                // add to reconnection list if appropriate
+                if ((pnode->addr.nServices & NODE_P2P_V2) && pnode->m_transport->ShouldReconnectV1()) {
+                    reconnections_to_add.emplace_back(
+                        /*addr_connect=*/CAddress{pnode->addr, ServiceFlags{pnode->addr.nServices & ~NODE_P2P_V2}},
+                        /*count_failure=*/pnode->m_count_failure_after_reconnect,
+                        /*grant=*/std::move(pnode->grantOutbound),
+                        /*dest=*/pnode->m_dest,
+                        /*conn_type=*/pnode->m_conn_type);
+                }
 
                 // release outbound grant (if any)
                 pnode->grantOutbound.Release();
@@ -1929,6 +1966,11 @@ void CConnman::DisconnectNodes()
                 DeleteNode(pnode);
             }
         }
+    }
+    {
+        // Move entries from reconnections_to_add to m_reconnections.
+        LOCK(m_reconnections_mutex);
+        m_reconnections.splice(m_reconnections.end(), std::move(reconnections_to_add));
     }
 }
 
@@ -2402,6 +2444,7 @@ bool CConnman::MaybePickPreferredNetwork(std::optional<Network>& network)
 void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
 {
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
+    AssertLockNotHeld(m_reconnections_mutex);
     FastRandomContext rng;
     // Connect to specific addresses
     if (!connect.empty())
@@ -2444,6 +2487,8 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect)
 
         if (!interruptNet.sleep_for(std::chrono::milliseconds(500)))
             return;
+
+        PerformReconnections();
 
         CSemaphoreGrant grant(*semOutbound);
         if (interruptNet)
@@ -2789,6 +2834,7 @@ std::vector<AddedNodeInfo> CConnman::GetAddedNodeInfo() const
 void CConnman::ThreadOpenAddedConnections()
 {
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
+    AssertLockNotHeld(m_reconnections_mutex);
     while (true)
     {
         CSemaphoreGrant grant(*semAddnode);
@@ -2816,6 +2862,8 @@ void CConnman::ThreadOpenAddedConnections()
         // Retry every 60 seconds if a connection was attempted, otherwise two seconds
         if (!interruptNet.sleep_for(std::chrono::seconds(tried ? 60 : 2)))
             return;
+        // See if any reconnections are desired.
+        PerformReconnections();
     }
 }
 
@@ -3620,7 +3668,9 @@ CNode::CNode(NodeId idIn,
       addr{addrIn},
       addrBind{addrBindIn},
       m_addr_name{addrNameIn.empty() ? addr.ToStringAddrPort() : addrNameIn},
+      m_dest(addrNameIn),
       m_inbound_onion{inbound_onion},
+      m_count_failure_after_reconnect{node_opts.count_failure_after_reconnect},
       m_prefer_evict{node_opts.prefer_evict},
       nKeyedNetGroup{nKeyedNetGroupIn},
       m_conn_type{conn_type_in},
@@ -3748,6 +3798,24 @@ uint64_t CConnman::CalculateKeyedNetGroup(const CAddress& address) const
     std::vector<unsigned char> vchNetGroup(m_netgroupman.GetGroup(address));
 
     return GetDeterministicRandomizer(RANDOMIZER_ID_NETGROUP).Write(vchNetGroup).Finalize();
+}
+
+void CConnman::PerformReconnections()
+{
+    AssertLockNotHeld(m_reconnections_mutex);
+    AssertLockNotHeld(m_unused_i2p_sessions_mutex);
+    while (true) {
+        // Move first element of m_reconnections to todo (avoiding an allocation inside the lock).
+        decltype(m_reconnections) todo;
+        {
+            LOCK(m_reconnections_mutex);
+            if (m_reconnections.empty()) break;
+            todo.splice(todo.end(), m_reconnections, m_reconnections.begin());
+        }
+
+        auto& [addr_connect, count_failure, grant, dest, conn_type] = *todo.begin();
+        OpenNetworkConnection(addr_connect, count_failure, &grant, dest.empty() ? nullptr : dest.c_str(), conn_type);
+    }
 }
 
 void CaptureMessageToFile(const CAddress& addr,
