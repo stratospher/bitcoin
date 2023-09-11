@@ -749,8 +749,10 @@ class NetworkThread(threading.Thread):
 
         def exception_handler(loop, context):
             if not p2p.reconnect:
+                print("in default_exception_handler")
                 loop.default_exception_handler(context)
 
+        print("call set_exception_handler")
         cls.network_event_loop.set_exception_handler(exception_handler)
         coroutine = cls.create_listen_server(addr, port, callback, p2p)
         cls.network_event_loop.call_soon_threadsafe(cls.network_event_loop.create_task, coroutine)
