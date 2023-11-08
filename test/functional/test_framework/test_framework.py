@@ -508,8 +508,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         assert_equal(len(binary_cli), num_nodes)
         for i in range(num_nodes):
             args = list(extra_args[i])
+            print("in TestFramework::addnodes()")
+            print("(global) --v2transport = ", self.options.v2transport)
             if self.options.v2transport and ("-v2transport=0" not in args):
                 args.append("-v2transport=1")
+                print("-v2transport=1 = True")
             test_node_i = TestNode(
                 i,
                 get_datadir_path(self.options.tmpdir, i),
@@ -602,7 +605,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         ip_port = "127.0.0.1:" + str(p2p_port(b))
 
         if peer_advertises_v2 is None:
-            peer_advertises_v2 = self.options.v2transport
+            peer_advertises_v2 = self.options.v2transport and '-v2transport=1' in from_connection.extra_args
 
         if peer_advertises_v2:
             from_connection.addnode(node=ip_port, command="onetry", v2transport=True)
