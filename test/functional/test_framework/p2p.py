@@ -146,6 +146,51 @@ MESSAGEMAP = {
     b"wtxidrelay": msg_wtxidrelay,
 }
 
+class WrapP2PLock:
+    def __init__(self, lock):
+        self._lock = lock
+
+    def acquire(self):
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: {thread_id} p2p_lock locked")
+        self._lock.acquire()
+    def release(self):
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: {thread_id} p2p_lock released")
+        self._lock.release()
+    def __enter__(self):
+        # thread_id = threading.current_thread().name
+        # for _send_lock in _send_lock_list:
+        #     assert not _send_lock.locked(), f"{thread_id}: _send_lock is already locked!"
+        self.acquire()
+    def __exit__(self, type, value, traceback):
+        self.release()
+
+
+class WrapSendLock:
+    def __init__(self, lock):
+        self._lock = lock
+
+    def acquire(self):
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: {thread_id} _send_lock locked")
+        self._lock.acquire()
+    def release(self):
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: {thread_id} _send_lock released")
+        self._lock.release()
+
+    def locked(self):
+        return self._lock.locked()
+    def __enter__(self):
+        self.acquire()
+    def __exit__(self, type, value, traceback):
+        self.release()
+
+
+p2p_lock = WrapP2PLock(threading.Lock())
+# _send_lock_list = []
+# _send_lock = WrapSendLock(threading.Lock())
 
 class P2PConnection(asyncio.Protocol):
     """A low-level connection object to a node's P2P interface.
@@ -166,7 +211,8 @@ class P2PConnection(asyncio.Protocol):
         self._transport = None
         # This lock is acquired before sending messages over the socket. There's an implied lock order and
         # p2p_lock must not be acquired after _send_lock as it could result in deadlocks.
-        self._send_lock = threading.Lock()
+        self._send_lock = WrapSendLock(threading.Lock())
+        # _send_lock_list.append(self._send_lock)
         self.v2_state = None  # EncryptedP2PState object needed for v2 p2p connections
         self.reconnect = False  # set if reconnection needs to happen
 
@@ -371,6 +417,8 @@ class P2PConnection(asyncio.Protocol):
 
         This method takes a P2P payload, builds the P2P header and adds
         the message to the send buffer to be sent over the socket."""
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: send_message {thread_id} \"{message.msgtype}\"")
         with self._send_lock:
             tmsg = self.build_message(message, is_decoy)
             self._log_message("send", message)
@@ -492,6 +540,8 @@ class P2PInterface(P2PConnection):
 
         We keep a count of how many of each message type has been received
         and the most recent message of each type."""
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: on_message {thread_id} \"{message.msgtype.decode('ascii')}\"")
         with p2p_lock:
             try:
                 msgtype = message.msgtype.decode('ascii')
@@ -579,7 +629,8 @@ class P2PInterface(P2PConnection):
             if check_connected:
                 assert self.is_connected
             return test_function_in()
-
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: wait_until {thread_id}")
         wait_until_helper_internal(test_function, timeout=timeout, lock=p2p_lock, timeout_factor=self.timeout_factor)
 
     def wait_for_connect(self, timeout=60):
@@ -699,7 +750,6 @@ class P2PInterface(P2PConnection):
 # P2PConnection acquires this lock whenever delivering a message to a P2PInterface.
 # This lock should be acquired in the thread running the test logic to synchronize
 # access to any data shared with the P2PInterface or P2PConnection.
-p2p_lock = threading.Lock()
 
 
 class NetworkThread(threading.Thread):
@@ -845,7 +895,8 @@ class P2PDataStore(P2PInterface):
          - if success is True: assert that the node's tip advances to the most recent block
          - if success is False: assert that the node's tip doesn't advance
          - if reject_reason is set: assert that the correct reject message is logged"""
-
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: send_blocks_and_test {thread_id}")
         with p2p_lock:
             for block in blocks:
                 self.block_store[block.sha256] = block
@@ -924,6 +975,8 @@ class P2PTxInvStore(P2PInterface):
                 self.tx_invs_received[i.hash] += 1
 
     def get_invs(self):
+        thread_id = threading.current_thread().name
+        logger.debug(f"inside: get_invs {thread_id}")
         with p2p_lock:
             return list(self.tx_invs_received.keys())
 
