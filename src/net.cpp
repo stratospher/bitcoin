@@ -813,6 +813,14 @@ CNetMessage V1Transport::GetReceivedMessage(const std::chrono::microseconds time
     return msg;
 }
 
+int64_t padme(int64_t L) {
+    int64_t E = floor(log2(L));
+    int64_t S = floor(log2(E)) + 1;
+    int64_t lastBits = E - S;
+    int64_t bitMask = (1 << lastBits) - 1;
+    return (L + bitMask) & ~bitMask;
+}
+
 bool V1Transport::SetMessageToSend(CSerializedNetMsg& msg) noexcept
 {
     AssertLockNotHeld(m_send_mutex);
@@ -826,6 +834,12 @@ bool V1Transport::SetMessageToSend(CSerializedNetMsg& msg) noexcept
     // create header
     CMessageHeader hdr(m_magic_bytes, msg.m_type.c_str(), msg.data.size());
     memcpy(hdr.pchChecksum, hash.begin(), CMessageHeader::CHECKSUM_SIZE);
+    if (msg.m_type == NetMsgType::TX){
+        size_t curr_size = msg.data.size();
+        uint64_t padding = 1000;
+        uint64_t padding2 = padme(curr_size);
+        LogPrintf("padding=%d, dynamic=%d\n", padding, padding2);
+    }
 
     // serialize header
     m_header_to_send.clear();
@@ -1476,6 +1490,15 @@ bool V2Transport::SetMessageToSend(CSerializedNetMsg& msg) noexcept
         std::copy(msg.m_type.begin(), msg.m_type.end(), contents.data() + 1);
         std::copy(msg.data.begin(), msg.data.end(), contents.begin() + 1 + CMessageHeader::COMMAND_SIZE);
     }
+
+    if (msg.m_type == NetMsgType::TX){
+        size_t curr_size = contents.size();
+        uint64_t padding = 1000;
+        uint64_t padding2 = padme(curr_size);
+        contents.resize(curr_size + padding2);
+        LogPrintf("padding=%d, dynamic=%d\n", padding, padding2);
+    }
+
     // Construct ciphertext in send buffer.
     m_send_buffer.resize(contents.size() + BIP324Cipher::EXPANSION);
     m_cipher.Encrypt(MakeByteSpan(contents), {}, false, MakeWritableByteSpan(m_send_buffer));
