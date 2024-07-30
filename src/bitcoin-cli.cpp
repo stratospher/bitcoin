@@ -256,19 +256,28 @@ public:
 class AddrinfoRequestHandler : public BaseRequestHandler
 {
 public:
+    const int ID_ADDRINFO = 0;
+    const int ID_SERVICEINFO = 1;
+
     UniValue PrepareRequest(const std::string& method, const std::vector<std::string>& args) override
     {
         if (!args.empty()) {
             throw std::runtime_error("-addrinfo takes no arguments");
         }
-        return JSONRPCRequestObj("getaddrmaninfo", NullUniValue, 1);
+        UniValue result(UniValue::VARR);
+        result.push_back(JSONRPCRequestObj("getaddrmaninfo", NullUniValue, ID_ADDRINFO));
+        result.push_back(JSONRPCRequestObj("getrawaddrman", NullUniValue, ID_SERVICEINFO));
+        return result;
     }
 
-    UniValue ProcessReply(const UniValue& reply) override
+    UniValue ProcessReply(const UniValue& batch_in) override
     {
-        if (!reply["error"].isNull()) return reply;
-        const std::vector<std::string>& network_types{reply["result"].getKeys()};
-        const std::vector<UniValue>& addrman_counts{reply["result"].getValues()};
+        const std::vector<UniValue> batch{JSONRPCProcessBatchReply(batch_in)};
+        if (!batch[ID_ADDRINFO]["error"].isNull()) return batch[ID_ADDRINFO];
+        if (!batch[ID_SERVICEINFO]["error"].isNull()) return batch[ID_SERVICEINFO];
+
+        const std::vector<std::string>& network_types{batch[ID_ADDRINFO]["result"].getKeys()};
+        const std::vector<UniValue>& addrman_counts{batch[ID_ADDRINFO]["result"].getValues()};
         if (network_types.empty()) {
             throw std::runtime_error("-addrinfo requires bitcoind server to be running v28.0 and up. if using an earlier bitcoind server (v22.0 - v27.0), use the appropriate binary");
         }
@@ -283,6 +292,67 @@ public:
         }
         addresses.pushKV("total", total);
         result.pushKV("addresses_known", addresses);
+
+        const std::vector<std::string>& table_names{batch[ID_SERVICEINFO]["result"].getKeys()};
+        const std::vector<UniValue>& table_entries{batch[ID_SERVICEINFO]["result"].getValues()};
+
+        UniValue services(UniValue::VOBJ);
+        int t_count_network = 0, t_count_bloom = 0, t_count_witness = 0, t_count_compact_filter = 0, t_count_network_limited = 0, t_count_v2 = 0, t_total = 0;
+        for (size_t i = 0; i < table_entries.size(); ++i) {
+            const UniValue& entry = table_entries[i];
+            int count_network = 0, count_bloom = 0, count_witness = 0, count_compact_filter = 0, count_network_limited = 0, count_v2 = 0;
+            uint64_t total = entry.getValues().size();
+            for (const UniValue& bucket_position : entry.getValues()) {
+                uint64_t services = bucket_position["services"].getInt<uint64_t>();
+                if (services & (1 << 0)){
+                    count_network++;
+                }
+                if (services & (1 << 2)){
+                    count_bloom++;
+                }
+                if (services & (1 << 3)){
+                    count_witness++;
+                }
+                if (services & (1 << 6)){
+                    count_compact_filter++;
+                }
+                if (services & (1 << 10)){
+                    count_network_limited++;
+                }
+                if (services & (1 << 11)){
+                    count_v2++;
+                }
+            }
+            UniValue service_from_table(UniValue::VOBJ);
+            double frac = 100/double(total);
+            service_from_table.pushKV("% of NODE_NETWORK", count_network*frac);
+            service_from_table.pushKV("% of NODE_BLOOM", count_bloom*frac);
+            service_from_table.pushKV("% of NODE_WITNESS", count_witness*frac);
+            service_from_table.pushKV("% of NODE_COMPACT_FILTERS", count_compact_filter*frac);
+            service_from_table.pushKV("% of NODE_NETWORK_LIMITED", count_network_limited*frac);
+            service_from_table.pushKV("% of NODE_P2P_V2", count_v2*frac);
+            services.pushKV(table_names[i], service_from_table);
+
+            t_count_network += count_network;
+            t_count_bloom += count_bloom;
+            t_count_witness += count_witness;
+            t_count_compact_filter += count_compact_filter;
+            t_count_network_limited += count_network_limited;
+            t_count_v2 += count_v2;
+            t_total += total;
+        }
+
+        UniValue service_from_table(UniValue::VOBJ);
+        double frac = 100/double(t_total);
+        service_from_table.pushKV("% of NODE_NETWORK", t_count_network*frac);
+        service_from_table.pushKV("% of NODE_BLOOM", t_count_bloom*frac);
+        service_from_table.pushKV("% of NODE_WITNESS", t_count_witness*frac);
+        service_from_table.pushKV("% of NODE_COMPACT_FILTERS", t_count_compact_filter*frac);
+        service_from_table.pushKV("% of NODE_NETWORK_LIMITED", t_count_network_limited*frac);
+        service_from_table.pushKV("% of NODE_P2P_V2", t_count_v2*frac);
+        services.pushKV("TOTAL", service_from_table);
+
+        result.pushKV("services", services);
         return JSONRPCReplyObj(result, NullUniValue, 1);
     }
 };
