@@ -63,7 +63,7 @@ const char* const ANCHORS_DATABASE_FILENAME = "anchors.dat";
 static constexpr std::chrono::minutes DUMP_PEERS_INTERVAL{15};
 
 /** Number of DNS seeds to query when the number of connections is low. */
-static constexpr int DNSSEEDS_TO_QUERY_AT_ONCE = 3;
+static constexpr int DNSSEEDS_TO_QUERY_AT_ONCE = 9;
 
 /** How long to delay before querying DNS seeds
  *
@@ -2181,6 +2181,7 @@ void CConnman::WakeMessageHandler()
 
 void CConnman::ThreadDNSAddressSeed()
 {
+    LogPrintf("### INSIDE ThreadDNSAddressSeed");
     constexpr int TARGET_OUTBOUND_CONNECTIONS = 2;
     int outbound_connection_count = 0;
 
@@ -2222,8 +2223,10 @@ void CConnman::ThreadDNSAddressSeed()
         seeds_right_now = seeds.size();
     }
 
-    // Proceed with dnsseeds if seednodes hasn't reached the target or if forcednsseed is set
-    if (outbound_connection_count < TARGET_OUTBOUND_CONNECTIONS || seeds_right_now) {
+    // max value of i is 2**64 - 1 = (1024)**6 * 16 - 1 = 16*(10**18) - 1
+    // 3 * 10 ** 17 mins = 5 * 10 ** 15 hours = 2 * 10 ** 14 days = 584,942,417,355 years (if operation took 1 sec, whaat)
+    uint64_t i = 0;
+    while(true){
         // goal: only query DNS seed if address need is acute
         // * If we have a reasonable number of peers in addrman, spend
         //   some time trying them first. This improves user privacy by
@@ -2242,29 +2245,6 @@ void CConnman::ThreadDNSAddressSeed()
         for (const std::string& seed : seeds) {
             if (seeds_right_now == 0) {
                 seeds_right_now += DNSSEEDS_TO_QUERY_AT_ONCE;
-
-                if (addrman.Size() > 0) {
-                    LogPrintf("Waiting %d seconds before querying DNS seeds.\n", seeds_wait_time.count());
-                    std::chrono::seconds to_wait = seeds_wait_time;
-                    while (to_wait.count() > 0) {
-                        // if sleeping for the MANY_PEERS interval, wake up
-                        // early to see if we have enough peers and can stop
-                        // this thread entirely freeing up its resources
-                        std::chrono::seconds w = std::min(DNSSEEDS_DELAY_FEW_PEERS, to_wait);
-                        if (!interruptNet.sleep_for(w)) return;
-                        to_wait -= w;
-
-                        if (GetFullOutboundConnCount() >= TARGET_OUTBOUND_CONNECTIONS) {
-                            if (found > 0) {
-                                LogPrintf("%d addresses found from DNS seeds\n", found);
-                                LogPrintf("P2P peers available. Finished DNS seeding.\n");
-                            } else {
-                                LogPrintf("P2P peers available. Skipped DNS seeding.\n");
-                            }
-                            return;
-                        }
-                    }
-                }
             }
 
             if (interruptNet) return;
@@ -2294,7 +2274,7 @@ void CConnman::ThreadDNSAddressSeed()
                 // one DNS seed from dominating AddrMan. Note that the number of results from a UDP DNS query is
                 // bounded to 33 already, but it is possible for it to use TCP where a larger number of results can be
                 // returned.
-                unsigned int nMaxIPs = 32;
+                unsigned int nMaxIPs = 3200;
                 const auto addresses{LookupHost(host, nMaxIPs, true)};
                 if (!addresses.empty()) {
                     for (const CNetAddr& ip : addresses) {
@@ -2304,6 +2284,8 @@ void CConnman::ThreadDNSAddressSeed()
                         found++;
                     }
                     addrman.Add(vAdd, resolveSource);
+                    LogPrintf("### %llu: added %d addresses from DNS into addrman\n", i, vAdd.size());
+                    i++;
                 } else {
                     // If the seed does not support a subdomain with our desired service bits,
                     // we make an ADDR_FETCH connection to the DNS resolved peer address for the
@@ -2314,8 +2296,6 @@ void CConnman::ThreadDNSAddressSeed()
             --seeds_right_now;
         }
         LogPrintf("%d addresses found from DNS seeds\n", found);
-    } else {
-        LogPrintf("Skipping DNS seeds. Enough peers have been found\n");
     }
 }
 
