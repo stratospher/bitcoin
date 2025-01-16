@@ -3674,7 +3674,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
     assert(pindex);
     if (pindex->nHeight == 0) return false;
 
-    CBlockIndex* to_mark_failed = pindex;
+    CBlockIndex* invalid_walk_tip = pindex;
     bool pindex_was_in_chain = false;
     int disconnected = 0;
 
@@ -3723,7 +3723,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
         LOCK(MempoolMutex());
         if (!m_chain.Contains(pindex)) break;
         pindex_was_in_chain = true;
-        CBlockIndex *invalid_walk_tip = m_chain.Tip();
+        invalid_walk_tip = m_chain.Tip();
 
         // ActivateBestChain considers blocks already in m_chain
         // unconditionally valid already, so force disconnect away from it.
@@ -3758,25 +3758,22 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
                 ++candidate_it;
             }
         }
-
-        // Track the last disconnected block to call InvalidChainFound on it.
-        to_mark_failed = invalid_walk_tip;
     }
 
     m_chainman.CheckBlockIndex();
 
     {
         LOCK(cs_main);
-        if (m_chain.Contains(to_mark_failed)) {
+        if (m_chain.Contains(invalid_walk_tip)) {
             // If the to-be-marked invalid block is in the active chain, something is interfering and we can't proceed.
             return false;
         }
 
         // Mark pindex (or the last disconnected block) as invalid, even when it never was in the main chain
-        to_mark_failed->nStatus |= BLOCK_FAILED_VALID;
-        m_blockman.m_dirty_blockindex.insert(to_mark_failed);
-        setBlockIndexCandidates.erase(to_mark_failed);
-        m_chainman.m_failed_blocks.insert(to_mark_failed);
+        invalid_walk_tip->nStatus |= BLOCK_FAILED_VALID;
+        m_blockman.m_dirty_blockindex.insert(invalid_walk_tip);
+        setBlockIndexCandidates.erase(invalid_walk_tip);
+        m_chainman.m_failed_blocks.insert(invalid_walk_tip);
 
         // If any new blocks somehow arrived while we were disconnecting
         // (above), then the pre-calculation of what should go into
@@ -3791,7 +3788,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
             }
         }
 
-        InvalidChainFound(to_mark_failed);
+        InvalidChainFound(invalid_walk_tip);
     }
 
     // Only notify about a new block tip if the active chain was modified.
@@ -3803,7 +3800,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
         // parameter indicating the source of the tip change so hooks can
         // distinguish user-initiated invalidateblock changes from other
         // changes.
-        (void)m_chainman.GetNotifications().blockTip(GetSynchronizationState(m_chainman.IsInitialBlockDownload(), m_chainman.m_blockman.m_blockfiles_indexed), *to_mark_failed->pprev);
+        (void)m_chainman.GetNotifications().blockTip(GetSynchronizationState(m_chainman.IsInitialBlockDownload(), m_chainman.m_blockman.m_blockfiles_indexed), *invalid_walk_tip->pprev);
 
         // Fire ActiveTipChange now for the current chain tip to make sure clients are notified.
         // ActivateBestChain may call this as well, but not necessarily.
