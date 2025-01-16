@@ -3306,7 +3306,7 @@ CBlockIndex* Chainstate::FindMostWorkChain()
                 // Remove the entire chain from the set.
                 while (pindexTest != pindexFailed) {
                     if (fFailedChain) {
-                        pindexFailed->nStatus |= BLOCK_FAILED_CHILD;
+                        pindexFailed->nStatus |= BLOCK_FAILED_VALID;
                         m_blockman.m_dirty_blockindex.insert(pindexFailed);
                     } else if (fMissingData) {
                         // If we're missing data, then add back to m_blocks_unlinked,
@@ -3817,7 +3817,7 @@ void Chainstate::SetBlockFailureFlags(CBlockIndex* invalid_block)
 
     for (auto& [_, block_index] : m_blockman.m_block_index) {
         if (block_index.GetAncestor(invalid_block->nHeight) == invalid_block && !(block_index.nStatus & BLOCK_FAILED_MASK)) {
-            block_index.nStatus |= BLOCK_FAILED_CHILD;
+            block_index.nStatus |= BLOCK_FAILED_VALID;
         }
     }
 }
@@ -4366,10 +4366,10 @@ bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValida
          *      B1 - C1 - D1 - E1
          *
          * In the case that we attempted to reorg from E1 to F2, only to find
-         * C2 to be invalid, we would mark D2, E2, and F2 as BLOCK_FAILED_CHILD
+         * C2 to be invalid, we would mark D2, E2, and F2 as BLOCK_FAILED_VALID
          * but NOT D3 (it was not in any of our candidate sets at the time).
          *
-         * In any case D3 will also be marked as BLOCK_FAILED_CHILD at restart
+         * In any case D3 will also be marked as BLOCK_FAILED_VALID at restart
          * in LoadBlockIndex.
          */
         if (!pindexPrev->IsValid(BLOCK_VALID_SCRIPTS)) {
@@ -4382,7 +4382,7 @@ bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValida
                     assert(failedit->nStatus & BLOCK_FAILED_VALID);
                     CBlockIndex* invalid_walk = pindexPrev;
                     while (invalid_walk != failedit) {
-                        invalid_walk->nStatus |= BLOCK_FAILED_CHILD;
+                        invalid_walk->nStatus |= BLOCK_FAILED_VALID;
                         m_blockman.m_dirty_blockindex.insert(invalid_walk);
                         invalid_walk = invalid_walk->pprev;
                     }
