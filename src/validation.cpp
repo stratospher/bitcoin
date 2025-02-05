@@ -5389,6 +5389,10 @@ void ChainstateManager::CheckBlockIndex()
         if (pindexFirstInvalid == nullptr) {
             // Checks for not-invalid blocks.
             assert((pindex->nStatus & BLOCK_FAILED_VALID) == 0); // The failed mask cannot be set for blocks without invalid parents.
+        } else {
+            // pindexFirstInvalid -> ...... -> pindex
+            // we check that descendants and block itself are BLOCK_FAILED_VALID
+            assert(pindex->nStatus & BLOCK_FAILED_VALID);
         }
         // Make sure m_chain_tx_count sum is correctly computed.
         if (!pindex->pprev) {
