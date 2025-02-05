@@ -3812,6 +3812,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
             return false;
         }
 
+        printf("InvalidateBlock: pindex_was_in_chain = %d\n", pindex_was_in_chain);
         // we reach here when m_chain doesn't contain pindex anymore
         // if pindex_was_in_chain is false => we never entered the while loop above => we need to mark (only if it's not marked - maybe it's marked even before fxn call)
         // if pindex_was_in_chain is true => we entered the while loop above => to_mark_failed was definitely marked as BLOCK_FAILED_VALID/CHILD
@@ -5398,16 +5399,20 @@ void ChainstateManager::CheckBlockIndex()
         if ((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_SCRIPTS) assert(pindexFirstNotScriptsValid == nullptr); // SCRIPTS valid implies all parents are SCRIPTS valid
         if (pindexFirstInvalid == nullptr) {
             // Checks for not-invalid blocks.
+            printf("pindexFirstInvalid == nullptr : %s\n", pindex->ToString().c_str());
             if (ActiveChain().Contains(pindex)) {
+                printf("failed mask not set in main chain\n");
                 assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
             }
         }
         else if (pindexFirstInvalid != pindex) {
             // pindexFirstInvalid -> ...... -> pindex
             // we check that descendants are BLOCK_FAILED_CHILD and not BLOCK_FAILED_VALID
+            printf("pindexFirstInvalid != pindex : %s\n", pindex->ToString().c_str());
             assert((pindex->nStatus & BLOCK_FAILED_VALID) == 0);
             assert(pindex->nStatus & BLOCK_FAILED_CHILD);
         } else {
+            printf("pindexFirstInvalid == pindex : %s\n", pindex->ToString().c_str());
             assert(pindex->nStatus & BLOCK_FAILED_VALID);
             assert((pindex->nStatus & BLOCK_FAILED_CHILD) == 0);
         }
