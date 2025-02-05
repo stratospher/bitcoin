@@ -3788,8 +3788,16 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
             return false;
         }
 
-        // Mark pindex as invalid if it never was in the main chain
-        if (!pindex_was_in_chain && !(pindex->nStatus & BLOCK_FAILED_MASK)) {
+        printf("InvalidateBlock: pindex_was_in_chain = %d\n", pindex_was_in_chain);
+        // we reach here when m_chain doesn't contain pindex anymore
+        // if pindex_was_in_chain is false => we never entered the while loop above => we need to mark (only if it's not marked - maybe it's marked even before fxn call)
+        // if pindex_was_in_chain is true => we entered the while loop above => to_mark_failed was definitely marked as BLOCK_FAILED_VALID/CHILD
+
+        if (!pindex_was_in_chain && ((pindex->nStatus & BLOCK_FAILED_VALID) == 0)) {
+            // Mark pindex (or the last disconnected block) as invalid, even when it never was in the main chain
+            // ex: 1 -> 2 -> 3 (BLOCK_FAILED_VALID) -> 4 (BLOCK_FAILED_CHILD)
+            // if we invalidate block 4, we don't want 4 to be (BLOCK_FAILED_VALID, BLOCK_FAILED_CHILD)
+            // so don't do anything
             pindex->nStatus |= BLOCK_FAILED_VALID;
             m_blockman.m_dirty_blockindex.insert(pindex);
             setBlockIndexCandidates.erase(pindex);
