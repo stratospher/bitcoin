@@ -168,6 +168,23 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                         }
                     }
                 }
+            },
+            [&] {
+                // InvalidateBlock + ReconsiderBlock
+                unsigned mode = fuzzed_data_provider.ConsumeIntegral<uint8_t>();
+                // different block index constellation when different probabilities used
+                if ((mode & 127) == 127) {
+                    // InvalidateBlock
+                    CBlockIndex *prev_block = PickValue(fuzzed_data_provider, blocks);
+                    BlockValidationState state;
+                    chainman.ActiveChainstate().InvalidateBlock(state, prev_block);
+                } else if ((mode & 5) == 5) {
+                    // ReconsiderBlock
+                    LOCK(cs_main);
+                    CBlockIndex *prev_block = PickValue(fuzzed_data_provider, blocks);
+                    chainman.ActiveChainstate().ResetBlockFailureFlags(prev_block);
+                    chainman.RecalculateBestHeader();
+                }
             });
     }
     chainman.CheckBlockIndex();
