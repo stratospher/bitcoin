@@ -3814,7 +3814,9 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
 
         // Mark pindex (or the last disconnected block) as invalid, even when it never was in the main chain
         to_mark_failed->nStatus |= BLOCK_FAILED_VALID;
-        m_blockman.m_dirty_blockindex.insert(to_mark_failed);
+        // We should already have dealt with these scenarios in while(true) loop
+        auto not_inserted_yet = m_blockman.m_dirty_blockindex.insert(to_mark_failed);
+        assert(!not_inserted_yet.second);
         setBlockIndexCandidates.erase(to_mark_failed);
 
         // If any new blocks somehow arrived while we were disconnecting
