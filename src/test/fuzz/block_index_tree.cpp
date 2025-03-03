@@ -168,6 +168,19 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                         }
                     }
                 }
+            },
+            [&] {
+                // InvalidateBlock
+                CBlockIndex *prev_block = PickValue(fuzzed_data_provider, blocks);
+                BlockValidationState state;
+                chainman.ActiveChainstate().InvalidateBlock(state, prev_block);
+            },
+            [&] {
+                // ReconsiderBlock
+                LOCK(cs_main);
+                CBlockIndex *prev_block = PickValue(fuzzed_data_provider, blocks);
+                chainman.ActiveChainstate().ResetBlockFailureFlags(prev_block);
+                chainman.RecalculateBestHeader();
             });
     }
     if (!abort_run) {
