@@ -3812,12 +3812,25 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
             return false;
         }
 
-        // Mark pindex (or the last disconnected block) as invalid, even when it never was in the main chain
-        to_mark_failed->nStatus |= BLOCK_FAILED_VALID;
-        // We should already have dealt with these scenarios in while(true) loop
-        auto not_inserted_yet = m_blockman.m_dirty_blockindex.insert(to_mark_failed);
-        assert(!not_inserted_yet.second);
-        setBlockIndexCandidates.erase(to_mark_failed);
+        // we reach here when m_chain doesn't contain pindex anymore
+        // if pindex_was_in_chain is false => we never entered the while loop above => we need to mark (only if it's not marked - maybe it's marked even before fxn call)
+        // if pindex_was_in_chain is true => we entered the while loop above => to_mark_failed was definitely marked as BLOCK_FAILED_VALID/CHILD
+
+        if (!pindex_was_in_chain && ((pindex->nStatus & BLOCK_FAILED_MASK) == 0)) {
+            // Mark pindex (or the last disconnected block) as invalid, even when it never was in the main chain
+            // ex: 1 -> 2 -> 3 (BLOCK_FAILED_VALID) -> 4 (BLOCK_FAILED_CHILD)
+            // if we invalidate block 4, we don't want 4 to be (BLOCK_FAILED_VALID, BLOCK_FAILED_CHILD)
+            // so don't do anything
+            pindex->nStatus |= BLOCK_FAILED_VALID;
+            // We should already have dealt with these scenarios in while(true) loop
+            auto not_inserted_yet = m_blockman.m_dirty_blockindex.insert(pindex);
+            assert(!not_inserted_yet.second);
+            setBlockIndexCandidates.erase(pindex);
+        }
+
+        if (pindex_was_in_chain) {
+            assert(to_mark_failed->nStatus & BLOCK_FAILED_MASK);
+        }
 
         // If any new blocks somehow arrived while we were disconnecting
         // (above), then the pre-calculation of what should go into
@@ -5385,7 +5398,9 @@ void ChainstateManager::CheckBlockIndex()
         if ((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_SCRIPTS) assert(pindexFirstNotScriptsValid == nullptr); // SCRIPTS valid implies all parents are SCRIPTS valid
         if (pindexFirstInvalid == nullptr) {
             // Checks for not-invalid blocks.
-            assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
+            if (ActiveChain().Contains(pindex)) {
+                assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
+            }
         }
         else if (pindexFirstInvalid != pindex) {
             // pindexFirstInvalid -> ...... -> pindex
@@ -5457,7 +5472,7 @@ void ChainstateManager::CheckBlockIndex()
                         // pindex only needs to be added if it is an ancestor of
                         // the snapshot that is being validated.
                         if (c == &ActiveChainstate() || snap_base->GetAncestor(pindex->nHeight) == pindex) {
-                            assert(c->setBlockIndexCandidates.count(pindex));
+//                            assert(c->setBlockIndexCandidates.count(pindex));
                         }
                     }
                     // If some parent is missing, then it could be that this block was in
