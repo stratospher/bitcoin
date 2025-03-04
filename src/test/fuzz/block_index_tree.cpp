@@ -38,6 +38,7 @@ void initialize_block_index_tree()
 
 FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
 {
+    SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
     SetMockTime(ConsumeTime(fuzzed_data_provider));
     ChainstateManager& chainman = *g_setup->m_node.chainman;
