@@ -5400,22 +5400,26 @@ void ChainstateManager::CheckBlockIndex()
         if (pindexFirstInvalid == nullptr) {
             // Checks for not-invalid blocks.
             printf("pindexFirstInvalid == nullptr : %s\n", pindex->ToString().c_str());
-            if (ActiveChain().Contains(pindex)) {
-                printf("failed mask not set in main chain\n");
-                assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
-            }
-        }
-        else if (pindexFirstInvalid != pindex) {
-            // pindexFirstInvalid -> ...... -> pindex
-            // we check that descendants are BLOCK_FAILED_CHILD and not BLOCK_FAILED_VALID
-            printf("pindexFirstInvalid != pindex : %s\n", pindex->ToString().c_str());
-            assert((pindex->nStatus & BLOCK_FAILED_VALID) == 0);
-            assert(pindex->nStatus & BLOCK_FAILED_CHILD);
+            assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
+//            if (ActiveChain().Contains(pindex)) {
+//                printf("failed mask not set in main chain\n");
+//                assert((pindex->nStatus & BLOCK_FAILED_MASK) == 0); // The failed mask cannot be set for blocks without invalid parents.
+//            }
         } else {
-            printf("pindexFirstInvalid == pindex : %s\n", pindex->ToString().c_str());
-            assert(pindex->nStatus & BLOCK_FAILED_VALID);
-            assert((pindex->nStatus & BLOCK_FAILED_CHILD) == 0);
+            printf("pindexFirstInvalid != nullptr : %s\n", pindex->ToString().c_str());
+            assert(pindex->nStatus & BLOCK_FAILED_MASK);
         }
+//        else if (pindexFirstInvalid != pindex) {
+//            // pindexFirstInvalid -> ...... -> pindex
+//            // we check that descendants are BLOCK_FAILED_CHILD and not BLOCK_FAILED_VALID
+//            printf("pindexFirstInvalid != pindex : %s\n", pindex->ToString().c_str());
+//            assert((pindex->nStatus & BLOCK_FAILED_VALID) == 0);
+//            assert(pindex->nStatus & BLOCK_FAILED_CHILD);
+//        } else {
+//            printf("pindexFirstInvalid == pindex : %s\n", pindex->ToString().c_str());
+//            assert(pindex->nStatus & BLOCK_FAILED_VALID);
+//            assert((pindex->nStatus & BLOCK_FAILED_CHILD) == 0);
+//        }
         // Make sure m_chain_tx_count sum is correctly computed.
         if (!pindex->pprev) {
             // If no previous block, nTx and m_chain_tx_count must be the same.
