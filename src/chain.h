@@ -290,6 +290,7 @@ public:
     }
 
     std::string ToString() const;
+    std::string BlockStatusToString() const;
 
     //! Check whether this block index entry is valid up to the passed validity level.
     bool IsValid(enum BlockStatus nUpTo = BLOCK_VALID_TRANSACTIONS) const

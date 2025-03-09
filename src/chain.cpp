@@ -12,10 +12,63 @@ std::string CBlockFileInfo::ToString() const
     return strprintf("CBlockFileInfo(blocks=%u, size=%u, heights=%u...%u, time=%s...%s)", nBlocks, nSize, nHeightFirst, nHeightLast, FormatISO8601Date(nTimeFirst), FormatISO8601Date(nTimeLast));
 }
 
+std::string CBlockIndex::BlockStatusToString() const
+{
+    LOCK(cs_main);
+    std::string s = "";
+    if (nStatus & BLOCK_STATUS_RESERVED) {
+        s += "BLOCK_STATUS_RESERVED, ";
+    }
+    if (nStatus & BLOCK_OPT_WITNESS) {
+        s += "BLOCK_OPT_WITNESS, ";
+    }
+    if (nStatus & BLOCK_FAILED_CHILD) {
+        s += "BLOCK_FAILED_CHILD, ";
+    }
+    if (nStatus & BLOCK_FAILED_VALID) {
+        s += "BLOCK_FAILED_VALID, ";
+    }
+    if (nStatus & BLOCK_HAVE_UNDO) {
+        s += "BLOCK_HAVE_UNDO, ";
+    }
+    if (nStatus & BLOCK_HAVE_DATA) {
+        s += "BLOCK_HAVE_DATA, ";
+    }
+
+    // validity checks
+    if (IsValid(BLOCK_VALID_SCRIPTS)) {
+        // not a power of 2, so we can't use & to check if bit is set
+        // BLOCK_VALID_SCRIPTS = 5 = 101, so if we encounter nStatus = 001, 101 & 001 would return true
+        // but not all bits for 5 are set. Hence, use IsValid()
+        s += "BLOCK_VALID_SCRIPTS, ";
+    }
+    if (IsValid(BLOCK_VALID_CHAIN)) {
+        s += "BLOCK_VALID_CHAIN, ";
+    }
+    if (IsValid(BLOCK_VALID_TRANSACTIONS)) {
+        s += "BLOCK_VALID_TRANSACTIONS, ";
+    }
+    if (IsValid(BLOCK_VALID_TREE)) {
+        // when BLOCK_VALID_TRANSACTIONS, BLOCK_VALID_CHAIN, BLOCK_VALID_SCRIPTS is set, BLOCK_VALID_TREE is cleared
+        // so assert(nStatus & BLOCK_VALID_TREE) won't be true here
+        // IsValid(BLOCK_VALID_TREE) doesn't mean nStatus & BLOCK_VALID_TREE even though it's a power of 2
+        s += "BLOCK_VALID_TREE, ";
+    }
+    if (IsValid(BLOCK_VALID_RESERVED)) {
+        s += "BLOCK_VALID_RESERVED, ";
+    }
+
+    if (s == "") {
+        s += "uhmm UNKNOWN_BLOCK_STATUS";
+    }
+
+    return s;
+}
+
 std::string CBlockIndex::ToString() const
 {
-    return strprintf("CBlockIndex(pprev=%p, nHeight=%d, merkle=%s, hashBlock=%s)",
-                     pprev, nHeight, hashMerkleRoot.ToString(), GetBlockHash().ToString());
+    return strprintf("CBlockIndex(pprev=%p, nHeight=%d, merkle=%s, hashBlock=%s, nStatus=%s)",
+                     pprev, nHeight, hashMerkleRoot.ToString(), GetBlockHash().ToString(), BlockStatusToString());
 }
 
 void CChain::SetTip(CBlockIndex& block)
