@@ -9,6 +9,11 @@ Test how locally submitted transactions are sent to the network when private bro
 import time
 import threading
 
+from test_framework.blocktools import (
+    add_witness_commitment,
+    create_block,
+    create_coinbase,
+)
 from test_framework.p2p import (
     P2PDataStore,
     P2PInterface,
@@ -16,6 +21,7 @@ from test_framework.p2p import (
     P2P_VERSION,
 )
 from test_framework.messages import (
+    COIN,
     CAddress,
     CInv,
     MSG_WTX,
@@ -25,6 +31,7 @@ from test_framework.messages import (
 from test_framework.netutil import (
     format_addr_port
 )
+from test_framework.script_util import ValidWitnessMalleatedTx
 from test_framework.socks5 import (
     Socks5Configuration,
     Socks5Server,
@@ -35,6 +42,7 @@ from test_framework.test_framework import (
 from test_framework.util import (
     MAX_NODES,
     assert_equal,
+    assert_not_equal,
     assert_raises_rpc_error,
     p2p_port,
     tor_port,
@@ -312,12 +320,34 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
         with tx_originator.busy_wait_for_debug_log(expected_msgs=[ignoring_msg.encode()]):
             tx_originator.sendrawtransaction(hexstring=txs[0]["hex"], maxfeerate=0.1)
 
-        # TODO: Create a malleated valid witness (how?) and substitute malleate_tx() below:
-        #self.log.info("Sending a malleated transaction with a valid witness via RPC")
-        #malleated_valid = malleate_tx(txs[0])
-        #ignoring_msg = f"Ignoring unnecessary request to schedule an already scheduled transaction: txid={malleated_valid.txid_hex}, wtxid={malleated_valid.getwtxid()}"
-        #with tx_originator.busy_wait_for_debug_log(expected_msgs=[ignoring_msg.encode()]):
-        #    tx_originator.sendrawtransaction(hexstring=malleated_valid.serialize_with_witness().hex(), maxfeerate=0.1)
+        self.log.info("Sending a pair of malleated transactions with a valid witness via RPC")
+        another_tx = wallet.get_utxo(confirmed_only=True)
+        another_txid = another_tx['txid']
+        txgen = ValidWitnessMalleatedTx()
+        parent = txgen.build_parent_tx(another_txid, 49.999688 * COIN)
+        wallet.sign_tx(parent)
+
+        tip = tx_originator.getbestblockhash()
+        height = tx_originator.getblockcount() + 1
+        block_time = tx_originator.getblockheader(tip)["mediantime"] + 1
+        block = create_block(int(tip, 16), create_coinbase(height), block_time, txlist=[parent])
+        add_witness_commitment(block)
+        block.solve()
+        tx_originator.submitblock(block.serialize().hex())
+
+        child_one, child_two = txgen.build_malleated_children(parent.txid_hex, 49.999373 * COIN)
+        child_one_wtxid = child_one.wtxid_hex
+        child_one_txid = child_one.txid_hex
+        child_two_wtxid = child_two.wtxid_hex
+        child_two_txid = child_two.txid_hex
+
+        assert_equal(child_one_txid, child_two_txid)
+        assert_not_equal(child_one_wtxid, child_two_wtxid)
+
+        tx_originator.sendrawtransaction(hexstring=child_one.serialize_with_witness().hex(), maxfeerate=0.1)
+        ignoring_msg = f"Ignoring unnecessary request to schedule an already scheduled transaction: txid={child_two_txid}, wtxid={child_two_wtxid}"
+        with tx_originator.busy_wait_for_debug_log(expected_msgs=[ignoring_msg.encode()]):
+            tx_originator.sendrawtransaction(hexstring=child_two.serialize_with_witness().hex(), maxfeerate=0.1)
 
         self.log.info("Sending a malleated transaction with an invalid witness via RPC")
         malleated_invalid = malleate_tx(txs[0])
