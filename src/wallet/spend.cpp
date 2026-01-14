@@ -312,7 +312,7 @@ util::Result<PreSelectedInputs> FetchSelectedInputs(const CWallet& wallet, const
         /* Set some defaults for depth, solvable, safe, time, and from_me as these don't matter for preset inputs since no selection is being done. */
         COutput output(outpoint, txout, /*depth=*/0, input_bytes, /*solvable=*/true, /*safe=*/true, /*time=*/0, /*from_me=*/false, coin_selection_params.m_effective_feerate);
         output.ApplyBumpFee(map_of_bump_fees.at(output.outpoint));
-        result.Insert(output, coin_selection_params.m_subtract_fee_outputs);
+        result.Insert(output);
     }
     return result;
 }
@@ -817,7 +817,7 @@ util::Result<SelectionResult> SelectCoins(const CWallet& wallet, CoinsResult& av
                                           const CoinSelectionParams& coin_selection_params)
 {
     // Deduct preset inputs amount from the search target
-    CAmount selection_target = nTargetValue - pre_set_inputs.total_amount;
+    CAmount selection_target = nTargetValue - pre_set_inputs.GetTotal(coin_selection_params.m_subtract_fee_outputs);
 
     // Return if automatic coin selection is disabled, and we don't cover the selection target
     if (!coin_control.m_allow_other_inputs && selection_target > 0) {
@@ -847,7 +847,7 @@ util::Result<SelectionResult> SelectCoins(const CWallet& wallet, CoinsResult& av
 
     // If needed, add preset inputs to the automatic coin selection result
     if (!pre_set_inputs.coins.empty()) {
-        SelectionResult preselected(pre_set_inputs.total_amount, SelectionAlgorithm::MANUAL);
+        SelectionResult preselected(pre_set_inputs.GetTotal(coin_selection_params.m_subtract_fee_outputs), SelectionAlgorithm::MANUAL);
         preselected.AddInputs(pre_set_inputs.coins, coin_selection_params.m_subtract_fee_outputs);
         op_selection_result->Merge(preselected);
         op_selection_result->RecalculateWaste(coin_selection_params.min_viable_change,
