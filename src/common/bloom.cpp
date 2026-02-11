@@ -211,6 +211,7 @@ void CRollingBloomFilter::insert(std::span<const unsigned char> vKey)
         }
     }
     nEntriesThisGeneration++;
+    m_total_insertions++;
 
     for (int n = 0; n < nHashFuncs; n++) {
         uint32_t h = RollingBloomHash(n, nTweak, vKey);
@@ -242,5 +243,6 @@ void CRollingBloomFilter::reset()
     nTweak = FastRandomContext().rand<unsigned int>();
     nEntriesThisGeneration = 0;
     nGeneration = 1;
+    m_total_insertions = 0;
     std::fill(data.begin(), data.end(), 0);
 }

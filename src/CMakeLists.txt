@@ -204,6 +204,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   mapport.cpp
   net.cpp
   net_processing.cpp
+  addr_relay_logger.cpp
   netgroup.cpp
   node/abort.cpp
   node/blockmanager_args.cpp
@@ -285,6 +286,7 @@ target_link_libraries(bitcoin_node
     $<TARGET_NAME_IF_EXISTS:libevent::extra>
     $<TARGET_NAME_IF_EXISTS:libevent::pthreads>
     $<TARGET_NAME_IF_EXISTS:USDT::headers>
+    $<IF:$<TARGET_EXISTS:SQLite::SQLite3>,SQLite::SQLite3,$<TARGET_NAME_IF_EXISTS:unofficial::sqlite3::sqlite3>>
 )
 
 # Bitcoin wrapper executable that can call other executables.

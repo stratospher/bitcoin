@@ -114,7 +114,7 @@ public:
     bool contains(std::span<const unsigned char> vKey) const;
 
     void reset();
-
+    uint64_t m_total_insertions = 0;
 private:
     int nEntriesPerGeneration;
     int nEntriesThisGeneration;

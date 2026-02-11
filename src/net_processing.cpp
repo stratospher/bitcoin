@@ -5,6 +5,7 @@
 
 #include <net_processing.h>
 
+#include <addr_relay_logger.h>
 #include <addrman.h>
 #include <arith_uint256.h>
 #include <banman.h>
@@ -1618,6 +1619,15 @@ void PeerManagerImpl::InitializeNode(const CNode& node, ServiceFlags our_service
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
     }
+
+    // Log peer info when peer_id is assigned
+    if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+        AddrRelayLogging::g_addr_relay_logger->LogPeerInfo(
+            nodeid,
+            node.addr.ToStringAddrPort(),
+            GetTime<std::chrono::seconds>().count()
+        );
+    }
 }
 
 void PeerManagerImpl::ReattemptInitialBroadcast(CScheduler& scheduler)
@@ -1994,6 +2004,14 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     // This argument can go away after Erlay support is complete.
     if (opts.reconcile_txs) {
         m_txreconciliation = std::make_unique<TxReconciliationTracker>(TXRECONCILIATION_VERSION);
+    }
+
+    // Initialize addr relay logger
+    if (!AddrRelayLogging::g_addr_relay_logger) {
+        AddrRelayLogging::g_addr_relay_logger = std::make_unique<AddrRelayLogging::AddrRelayLogger>();
+        if (opts.datadir) {
+            AddrRelayLogging::g_addr_relay_logger->Init(*opts.datadir);
+        }
     }
 }
 
@@ -4045,10 +4063,24 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             if (interruptMsgProc)
                 return;
 
+            // Save original nTime before correction
+            const auto original_ntime = addr.nTime;
+            bool removed = false;
+
             // Apply rate limiting.
             if (peer.m_addr_token_bucket < 1.0) {
                 if (rate_limited) {
                     ++num_rate_limit;
+                    removed = true;
+                    // Log RECV-REMOVED for rate limited
+                    if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+                        AddrRelayLogging::g_addr_relay_logger->LogAddrEvent(
+                            AddrRelayLogging::EventType::RECV_REMOVED,
+                            addr,
+                            pfrom.GetId(),
+                            current_time.count()
+                        );
+                    }
                     continue;
                 }
             } else {
@@ -4057,8 +4089,19 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             // We only bother storing full nodes, though this may include
             // things which we would not make an outbound connection to, in
             // part because we may make feeler connections to them.
-            if (!MayHaveUsefulAddressDB(addr.nServices) && !HasAllDesirableServiceFlags(addr.nServices))
+            if (!MayHaveUsefulAddressDB(addr.nServices) && !HasAllDesirableServiceFlags(addr.nServices)) {
+                removed = true;
+                // Log RECV-REMOVED for service flags
+                if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+                    AddrRelayLogging::g_addr_relay_logger->LogAddrEvent(
+                        AddrRelayLogging::EventType::RECV_REMOVED,
+                        addr,
+                        pfrom.GetId(),
+                        current_time.count()
+                    );
+                }
                 continue;
+            }
 
             if (addr.nTime <= NodeSeconds{100000000s} || addr.nTime > current_a_time + 10min) {
                 addr.nTime = current_a_time - 5 * 24h;
@@ -4066,9 +4109,34 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             AddAddressKnown(peer, addr);
             if (m_banman && (m_banman->IsDiscouraged(addr) || m_banman->IsBanned(addr))) {
                 // Do not process banned/discouraged addresses beyond remembering we received them
+                removed = true;
+                // Log RECV-REMOVED for banned
+                if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+                    CAddress addr_with_original_time = addr;
+                    addr_with_original_time.nTime = original_ntime;
+                    AddrRelayLogging::g_addr_relay_logger->LogAddrEvent(
+                        AddrRelayLogging::EventType::RECV_REMOVED,
+                        addr_with_original_time,
+                        pfrom.GetId(),
+                        current_time.count()
+                    );
+                }
                 continue;
             }
             ++num_proc;
+
+            // Log RECV for processed addresses
+            if (!removed && AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+                CAddress addr_with_original_time = addr;
+                addr_with_original_time.nTime = original_ntime;
+                AddrRelayLogging::g_addr_relay_logger->LogAddrEvent(
+                    AddrRelayLogging::EventType::RECV,
+                    addr_with_original_time,
+                    pfrom.GetId(),
+                    current_time.count()
+                );
+            }
+
             const bool reachable{g_reachable_nets.Contains(addr)};
             if (addr.nTime > current_a_time - 10min && !peer.m_getaddr_sent && vAddr.size() <= 10 && addr.IsRoutable()) {
                 // Relay to a limited number of other nodes
@@ -4081,6 +4149,19 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         }
         peer.m_addr_processed += num_proc;
         peer.m_addr_rate_limited += num_rate_limit;
+
+        // Log peer info and RECV summary
+        if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+            AddrRelayLogging::g_addr_relay_logger->LogRecvSummary(
+                pfrom.GetId(),
+                peer.m_addr_known->m_total_insertions,
+                num_proc,
+                num_rate_limit,
+                peer.m_addr_token_bucket,
+                current_time.count()
+            );
+        }
+
         LogDebug(BCLog::NET, "Received addr: %u addresses (%u processed, %u rate-limited) from peer=%d\n",
                  vAddr.size(), num_proc, num_rate_limit, pfrom.GetId());
 
@@ -5553,6 +5634,20 @@ void PeerManagerImpl::MaybeSendAddr(CNode& node, Peer& peer, std::chrono::micros
 
     // Remove addr records that the peer already knows about, and add new
     // addrs to the m_addr_known filter on the same pass.
+
+    // Log all addresses before filtering
+    if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+        for (const CAddress& addr : peer.m_addrs_to_send) {
+            bool already_known = peer.m_addr_known->contains(addr.GetKey());
+            AddrRelayLogging::g_addr_relay_logger->LogAddrEvent(
+                already_known ? AddrRelayLogging::EventType::SEND_REMOVED : AddrRelayLogging::EventType::SEND,
+                addr,
+                node.GetId(),
+                current_time.count()
+            );
+        }
+    }
+
     auto addr_already_known = [&peer](const CAddress& addr) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
         bool ret = peer.m_addr_known->contains(addr.GetKey());
         if (!ret) peer.m_addr_known->insert(addr.GetKey());
@@ -5563,6 +5658,15 @@ void PeerManagerImpl::MaybeSendAddr(CNode& node, Peer& peer, std::chrono::micros
 
     // No addr messages to send
     if (peer.m_addrs_to_send.empty()) return;
+
+    // Log send summary
+    if (AddrRelayLogging::g_addr_relay_logger && AddrRelayLogging::g_addr_relay_logger->IsEnabled()) {
+        AddrRelayLogging::g_addr_relay_logger->LogSendSummary(
+            node.GetId(),
+            peer.m_addr_known->m_total_insertions,
+            current_time.count()
+        );
+    }
 
     if (peer.m_wants_addrv2) {
         MakeAndPushMessage(node, NetMsgType::ADDRV2, CAddress::V2_NETWORK(peer.m_addrs_to_send));

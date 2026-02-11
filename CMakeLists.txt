@@ -108,13 +108,13 @@ option(BUILD_KERNEL_LIB "Build experimental bitcoinkernel library." ${BUILD_UTIL
 cmake_dependent_option(BUILD_KERNEL_TEST "Build tests for the experimental bitcoinkernel library." ON "BUILD_KERNEL_LIB" OFF)
 
 option(ENABLE_WALLET "Enable wallet." ON)
-if(ENABLE_WALLET)
-  if(VCPKG_TARGET_TRIPLET)
-    # Use of the `unofficial::` namespace is a vcpkg package manager convention.
-    find_package(unofficial-sqlite3 CONFIG REQUIRED)
-  else()
-    find_package(SQLite3 3.7.17 REQUIRED)
-  endif()
+
+# SQLite3 is needed for wallet and addr relay logging
+if(VCPKG_TARGET_TRIPLET)
+  # Use of the `unofficial::` namespace is a vcpkg package manager convention.
+  find_package(unofficial-sqlite3 CONFIG REQUIRED)
+else()
+  find_package(SQLite3 3.7.17 REQUIRED)
 endif()
 cmake_dependent_option(BUILD_WALLET_TOOL "Build bitcoin-wallet tool." ${BUILD_TESTS} "ENABLE_WALLET" OFF)
 
