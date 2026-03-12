@@ -629,8 +629,10 @@ class OrphanHandlingTest(BitcoinTestFramework):
         large_orphans = [create_large_orphan() for _ in range(60)]
 
         # Check to make sure these are orphans, within max standard size (to be accepted into the orphanage)
-        for large_orphan in large_orphans:
+        for i, large_orphan in enumerate(large_orphans):
+            self.log.info(f"testmempoolaccept {i+1}/{len(large_orphans)} sending at t={time.monotonic():.3f}")
             testres = node.testmempoolaccept([large_orphan.serialize().hex()])
+            self.log.info(f"testmempoolaccept {i+1}/{len(large_orphans)} returned at t={time.monotonic():.3f}")
             assert not testres[0]["allowed"]
             assert_equal(testres[0]["reject-reason"], "missing-inputs")
 

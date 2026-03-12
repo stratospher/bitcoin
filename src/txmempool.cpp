@@ -438,6 +438,7 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
 
     AssertLockHeld(::cs_main);
     LOCK(cs);
+    LogInfo("DEBUG: CTxMemPool::check - starting check\n");
     LogDebug(BCLog::MEMPOOL, "Checking mempool with %u transactions and %u inputs\n", (unsigned int)mapTx.size(), (unsigned int)mapNextTx.size());
 
     uint64_t checkTotal = 0;
@@ -447,14 +448,20 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     uint64_t innerUsage = 0;
 
     assert(!m_txgraph->IsOversized(TxGraph::Level::MAIN));
+    LogInfo("DEBUG: CTxMemPool::check - calling SanityCheck\n");
     m_txgraph->SanityCheck();
+    LogInfo("DEBUG: CTxMemPool::check - SanityCheck done\n");
 
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
 
+    LogInfo("DEBUG: CTxMemPool::check - calling GetSortedScoreWithTopology\n");
     const auto score_with_topo{GetSortedScoreWithTopology()};
+    LogInfo("DEBUG: CTxMemPool::check - GetSortedScoreWithTopology done\n");
 
     // Number of chunks is bounded by number of transactions.
+    LogInfo("DEBUG: CTxMemPool::check - calling GetFeerateDiagram\n");
     const auto diagram{GetFeerateDiagram()};
+    LogInfo("DEBUG: CTxMemPool::check - GetFeerateDiagram done\n");
     assert(diagram.size() <= score_with_topo.size() + 1);
     assert(diagram.size() >= 1);
 
@@ -551,6 +558,7 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     assert(diagram.back().fee == check_total_modified_fee);
     assert(diagram.back().size == check_total_adjusted_weight);
     assert(innerUsage == cachedInnerUsage);
+    LogInfo("DEBUG: CTxMemPool::check - finished all checks\n");
 }
 
 bool CTxMemPool::CompareMiningScoreWithTopology(const Wtxid& hasha, const Wtxid& hashb) const

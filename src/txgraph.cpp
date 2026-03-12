@@ -6,6 +6,7 @@
 
 #include <cluster_linearize.h>
 #include <random.h>
+#include <util/log.h>
 #include <util/bitset.h>
 #include <util/check.h>
 #include <util/feefrac.h>
@@ -1846,9 +1847,11 @@ void TxGraphImpl::SplitAll(int up_to_level) noexcept
     for (int level = 0; level <= up_to_level; ++level) {
         for (auto quality : {QualityLevel::NEEDS_SPLIT_FIX, QualityLevel::NEEDS_SPLIT}) {
             auto& queue = GetClusterSet(level).m_clusters[int(quality)];
+            LogInfo("DEBUG: SplitAll level=%d quality=%d (size=%zu) ...\n", level, (int)quality, queue.size());
             while (!queue.empty()) {
                 Split(*queue.back().get(), level);
             }
+            LogInfo("DEBUG: SplitAll level=%d quality=%d done\n", level, (int)quality);
         }
     }
 }
@@ -2207,6 +2210,9 @@ std::pair<uint64_t, bool> SingletonClusterImpl::Relinearize(TxGraphImpl& graph, 
 void TxGraphImpl::MakeAcceptable(Cluster& cluster, int level) noexcept
 {
     // Relinearize the Cluster if needed.
+    if (cluster.NeedsSplitting()) {
+        LogInfo("DEBUG: MakeAcceptable called on cluster %p that NEEDS SPLITTING! quality=%d\n", &cluster, (int)cluster.m_quality);
+    }
     if (!cluster.NeedsSplitting() && !cluster.IsAcceptable() && !cluster.IsOversized()) {
         cluster.Relinearize(*this, level, m_acceptable_cost);
     }
@@ -2217,11 +2223,17 @@ void TxGraphImpl::MakeAllAcceptable(int level) noexcept
     ApplyDependencies(level);
     auto& clusterset = GetClusterSet(level);
     if (clusterset.m_oversized == true) return;
+    LogInfo("DEBUG: MakeAllAcceptable level=%d observers=%zu needs_fix=%zu needs_reline=%zu\n",
+            level, m_main_chunkindex_observers,
+            clusterset.m_clusters[int(QualityLevel::NEEDS_FIX)].size(),
+            clusterset.m_clusters[int(QualityLevel::NEEDS_RELINEARIZE)].size());
     for (auto quality : {QualityLevel::NEEDS_FIX, QualityLevel::NEEDS_RELINEARIZE}) {
         auto& queue = clusterset.m_clusters[int(quality)];
+        LogInfo("DEBUG: MakeAllAcceptable quality=%d (size=%zu) ...\n", (int)quality, queue.size());
         while (!queue.empty()) {
             MakeAcceptable(*queue.back().get(), level);
         }
+        LogInfo("DEBUG: MakeAllAcceptable quality=%d done\n", (int)quality);
     }
 }
 
@@ -2931,6 +2943,9 @@ void SingletonClusterImpl::SanityCheck(const TxGraphImpl& graph, int level) cons
 
 void TxGraphImpl::SanityCheck() const
 {
+    LogInfo("DEBUG: SanityCheck start (entries=%zu, chunkindex=%zu, unlinked=%zu)\n",
+            m_entries.size(), m_main_chunkindex.size(), m_unlinked.size());
+
     /** Which GraphIndexes ought to occur in m_unlinked, based on m_entries. */
     std::set<GraphIndex> expected_unlinked;
     /** Which Clusters ought to occur in ClusterSet::m_clusters, based on m_entries. */
@@ -2986,12 +3001,18 @@ void TxGraphImpl::SanityCheck() const
         }
     }
 
+    LogInfo("DEBUG: SanityCheck phase 2 (cluster loop, expected_unlinked=%zu)\n", expected_unlinked.size());
     // For all levels (0 = main, 1 = staged)...
     for (int level = 0; level <= GetTopLevel(); ++level) {
         assert(level < MAX_LEVELS);
         auto& clusterset = GetClusterSet(level);
         std::set<const Cluster*> actual_clusters;
         size_t recomputed_cluster_usage{0};
+
+        size_t total_clusters_at_level{0};
+        for (int q = 0; q < int(QualityLevel::NONE); ++q) total_clusters_at_level += clusterset.m_clusters[q].size();
+        LogInfo("DEBUG: SanityCheck level=%d (clusters=%zu, to_remove=%zu, deps_to_add=%zu)\n",
+                level, total_clusters_at_level, clusterset.m_to_remove.size(), clusterset.m_deps_to_add.size());
 
         // For all quality levels...
         for (int qual = 0; qual < int(QualityLevel::NONE); ++qual) {
@@ -3085,6 +3106,7 @@ void TxGraphImpl::SanityCheck() const
         if (level < GetTopLevel()) assert(clusterset.m_oversized.has_value());
     }
 
+    LogInfo("DEBUG: SanityCheck phase 3 (unlinked check)\n");
     // Verify that the contents of m_unlinked matches what was expected based on the Entry vector.
     std::set<GraphIndex> actual_unlinked(m_unlinked.begin(), m_unlinked.end());
     assert(actual_unlinked == expected_unlinked);
@@ -3095,6 +3117,7 @@ void TxGraphImpl::SanityCheck() const
         assert(actual_unlinked.empty());
     }
 
+    LogInfo("DEBUG: SanityCheck phase 4 (chunk index check)\n");
     // Finally, check the chunk index.
     std::set<GraphIndex> actual_chunkindex;
     FeeFrac last_chunk_feerate;
@@ -3108,6 +3131,7 @@ void TxGraphImpl::SanityCheck() const
         last_chunk_feerate = chunk_feerate;
     }
     assert(actual_chunkindex == expected_chunkindex);
+    LogInfo("DEBUG: SanityCheck done\n");
 }
 
 bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
@@ -3119,12 +3143,16 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
         // First linearize staging, if it exists, then main.
         for (int level = GetTopLevel(); level >= 0; --level) {
             // Do not modify main if it has any observers.
-            if (level == 0 && m_main_chunkindex_observers != 0) continue;
+            if (level == 0 && m_main_chunkindex_observers != 0) {
+                LogInfo("DEBUG: DoWork skipping level 0 due to %zu observers\n", m_main_chunkindex_observers);
+                continue;
+            }
             ApplyDependencies(level);
             auto& clusterset = GetClusterSet(level);
             // Do not modify oversized levels.
             if (clusterset.m_oversized == true) continue;
             auto& queue = clusterset.m_clusters[int(quality)];
+            LogInfo("DEBUG: DoWork level=%d quality=%d (size=%zu) ...\n", level, (int)quality, queue.size());
             while (!queue.empty()) {
                 if (cost_done >= max_cost) return false;
                 // Randomize the order in which we process, so that if the first cluster somehow
@@ -3148,6 +3176,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
                 // stop here too.
                 if (!improved) return false;
             }
+            LogInfo("DEBUG: DoWork level=%d quality=%d done\n", level, (int)quality);
         }
     }
     // All possible work has been performed, so we can return true. Note that this does *not* mean

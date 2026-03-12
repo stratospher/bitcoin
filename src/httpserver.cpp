@@ -189,6 +189,7 @@ std::string RequestMethodString(HTTPRequest::RequestMethod m)
 static void http_request_cb(struct evhttp_request* req, void* arg)
 {
     evhttp_connection* conn{evhttp_request_get_connection(req)};
+    LogDebug(BCLog::HTTP, "HTTP callback fired (conn=%p)\n", conn);
     // Track active requests
     {
         g_requests.AddRequest(req);
@@ -196,6 +197,7 @@ static void http_request_cb(struct evhttp_request* req, void* arg)
             g_requests.RemoveRequest(req);
         }, nullptr);
         evhttp_connection_set_closecb(conn, [](evhttp_connection* conn, void* arg) {
+            LogDebug(BCLog::HTTP, "HTTP connection closed (conn=%p)\n", conn);
             g_requests.RemoveConnection(conn);
         }, nullptr);
     }
@@ -229,8 +231,8 @@ static void http_request_cb(struct evhttp_request* req, void* arg)
         return;
     }
 
-    LogDebug(BCLog::HTTP, "Received a %s request for %s from %s\n",
-             RequestMethodString(hreq->GetRequestMethod()), SanitizeString(hreq->GetURI(), SAFE_CHARS_URI).substr(0, 100), hreq->GetPeer().ToStringAddrPort());
+    LogDebug(BCLog::HTTP, "Received a %s request for %s from %s (conn=%p)\n",
+             RequestMethodString(hreq->GetRequestMethod()), SanitizeString(hreq->GetURI(), SAFE_CHARS_URI).substr(0, 100), hreq->GetPeer().ToStringAddrPort(), conn);
 
     // Find registered handler for prefix
     std::string strURI = hreq->GetURI();

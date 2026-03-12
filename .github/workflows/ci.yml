@@ -61,15 +61,21 @@ jobs:
     runs-on: ${{ needs.runners.outputs.provider == 'cirrus' && 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-md' || 'ubuntu-24.04' }}
     env:
       TEST_RUNNER_PORT_MIN: "14000"  # Use a larger port, to avoid colliding with CIRRUS_CACHE_HOST port 12321.
-    if: github.event_name == 'pull_request' && github.event.pull_request.commits != 1
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.commits != 1)
     timeout-minutes: 360  # Use maximum time, see https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idtimeout-minutes.
     steps:
       - name: Determine fetch depth
-        run: echo "FETCH_DEPTH=$((${{ github.event.pull_request.commits }} + 2))" >> "$GITHUB_ENV"
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "FETCH_DEPTH=$((${{ github.event.pull_request.commits }} + 2))" >> "$GITHUB_ENV"
+            echo "NUM_COMMITS=${{ github.event.pull_request.commits }}" >> "$GITHUB_ENV"
+          else
+            echo "FETCH_DEPTH=0" >> "$GITHUB_ENV"
+          fi
       - *ANNOTATION_PR_NUMBER
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: ${{ env.FETCH_DEPTH }}
       - name: Determine commit range
         run: |
@@ -109,9 +115,19 @@ jobs:
           if test -n "$MERGE_BASE"; then
             EXCLUDE_MERGE_BASE_ANCESTORS=^${MERGE_BASE}^@
           fi
-          echo "TEST_BASE=$(git rev-list -n${{ github.event.pull_request.commits }} --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
+          if [ -z "${NUM_COMMITS}" ]; then
+            git fetch origin master
+            NUM_COMMITS=$(git rev-list --count HEAD ^origin/master)
+            echo "NUM_COMMITS=${NUM_COMMITS}" >> "$GITHUB_ENV"
+            if [ "${NUM_COMMITS}" = "0" ]; then
+              # Only one commit on branch; nothing to test before HEAD.
+              echo "TEST_BASE=skip" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          fi
+          echo "TEST_BASE=$(git rev-list -n${NUM_COMMITS} --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
       - run: |
-          git fetch origin "${GITHUB_BASE_REF}"
+          git fetch origin "${GITHUB_BASE_REF:-master}"
           git config user.email "ci@example.com"
           git config user.name "CI"
       - run: |
@@ -119,9 +135,10 @@ jobs:
           sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libevent-dev libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
           sudo pip3 install --break-system-packages pycapnp
       - name: Compile and run tests
+        if: env.TEST_BASE != 'skip'
         run: |
           # Run tests on commits after the last merge commit and before the PR head commit
-          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
+          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF:-master} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
 
   macos-native-arm64:
     name: ${{ matrix.job-name }}

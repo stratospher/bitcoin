@@ -317,6 +317,7 @@ static RPCHelpMan testmempoolaccept()
                 },
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
         {
+            LogInfo("DEBUG: testmempoolaccept - starting\n");
             const UniValue raw_transactions = request.params[0].get_array();
             if (raw_transactions.size() < 1 || raw_transactions.size() > MAX_PACKAGE_COUNT) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER,
@@ -405,8 +406,9 @@ static RPCHelpMan testmempoolaccept()
                 }
                 rpc_result.push_back(std::move(result_inner));
             }
+            LogInfo("DEBUG: testmempoolaccept - finished\n");
             return rpc_result;
-        },
+        }
     };
 }
 
@@ -972,7 +974,7 @@ static RPCHelpMan gettxspendingprevout()
                 if (nOutput < 0) {
                     throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, vout cannot be negative");
                 }
-                prevouts.emplace_back(COutPoint{txid, uint32_t(nOutput)}, o, UniValue{});
+                prevouts.push_back({COutPoint{txid, uint32_t(nOutput)}, o, UniValue{}});
             }
 
             // search the mempool first
