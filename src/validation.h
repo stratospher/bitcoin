@@ -861,6 +861,10 @@ protected:
         DisconnectedBlockTransactions& disconnectpool) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool->cs);
 
     void InvalidBlockFound(CBlockIndex* pindex, const BlockValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    /** Single mutation point for marking a block as BLOCK_FAILED_VALID.
+     *  Maintains all derived state: marks dirty, removes from setBlockIndexCandidates,
+     *  and updates m_best_invalid. Does NOT update m_best_header (requires a full scan). */
+    void MarkBlockFailed(CBlockIndex* pindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     CBlockIndex* FindMostWorkChain() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     bool RollforwardBlock(const CBlockIndex* pindex, CCoinsViewCache& inputs) EXCLUSIVE_LOCKS_REQUIRED(cs_main);

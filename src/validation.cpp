@@ -1964,9 +1964,6 @@ void Chainstate::CheckForkWarningConditions()
 void Chainstate::InvalidChainFound(CBlockIndex* pindexNew)
 {
     AssertLockHeld(cs_main);
-    if (!m_chainman.m_best_invalid || pindexNew->nChainWork > m_chainman.m_best_invalid->nChainWork) {
-        m_chainman.m_best_invalid = pindexNew;
-    }
     const bool recalculate_best_header{m_chainman.m_best_header != nullptr &&
         m_chainman.m_best_header->GetAncestor(pindexNew->nHeight) == pindexNew};
     SetBlockFailureFlags(pindexNew, recalculate_best_header);
@@ -1982,15 +1979,24 @@ void Chainstate::InvalidChainFound(CBlockIndex* pindexNew)
     CheckForkWarningConditions();
 }
 
+void Chainstate::MarkBlockFailed(CBlockIndex* pindex)
+{
+    AssertLockHeld(cs_main);
+    pindex->nStatus |= BLOCK_FAILED_VALID;
+    m_blockman.m_dirty_blockindex.insert(pindex);
+    setBlockIndexCandidates.erase(pindex);
+    if (!m_chainman.m_best_invalid || pindex->nChainWork > m_chainman.m_best_invalid->nChainWork) {
+        m_chainman.m_best_invalid = pindex;
+    }
+}
+
 // Same as InvalidChainFound, above, except not called directly from InvalidateBlock,
 // which does its own setBlockIndexCandidates management.
 void Chainstate::InvalidBlockFound(CBlockIndex* pindex, const BlockValidationState& state)
 {
     AssertLockHeld(cs_main);
     if (state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
-        pindex->nStatus |= BLOCK_FAILED_VALID;
-        m_blockman.m_dirty_blockindex.insert(pindex);
-        setBlockIndexCandidates.erase(pindex);
+        MarkBlockFailed(pindex);
         InvalidChainFound(pindex);
     }
 }
@@ -3138,23 +3144,19 @@ CBlockIndex* Chainstate::FindMostWorkChain()
             bool fMissingData = !(pindexTest->nStatus & BLOCK_HAVE_DATA);
             if (fFailedChain || fMissingData) {
                 // Candidate chain is not usable (either invalid or missing data)
-                if (fFailedChain && (m_chainman.m_best_invalid == nullptr || pindexNew->nChainWork > m_chainman.m_best_invalid->nChainWork)) {
-                    m_chainman.m_best_invalid = pindexNew;
-                }
                 CBlockIndex *pindexFailed = pindexNew;
                 // Remove the entire chain from the set.
                 while (pindexTest != pindexFailed) {
                     if (fFailedChain) {
-                        pindexFailed->nStatus |= BLOCK_FAILED_VALID;
-                        m_blockman.m_dirty_blockindex.insert(pindexFailed);
+                        MarkBlockFailed(pindexFailed);
                     } else if (fMissingData) {
                         // If we're missing data, then add back to m_blocks_unlinked,
                         // so that if the block arrives in the future we can try adding
                         // to setBlockIndexCandidates again.
                         m_blockman.m_blocks_unlinked.insert(
                             std::make_pair(pindexFailed->pprev, pindexFailed));
+                        setBlockIndexCandidates.erase(pindexFailed);
                     }
-                    setBlockIndexCandidates.erase(pindexFailed);
                     pindexFailed = pindexFailed->pprev;
                 }
                 setBlockIndexCandidates.erase(pindexTest);
@@ -3601,9 +3603,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
         // and be left unable to start as they have no tip candidates (as there
         // are no blocks that meet the "have data and are not invalid per
         // nStatus" criteria for inclusion in setBlockIndexCandidates).
-        disconnected_tip->nStatus |= BLOCK_FAILED_VALID;
-        m_blockman.m_dirty_blockindex.insert(disconnected_tip);
-        setBlockIndexCandidates.erase(disconnected_tip);
+        MarkBlockFailed(disconnected_tip);
         setBlockIndexCandidates.insert(new_tip);
 
         // Mark out-of-chain descendants of the invalidated block as invalid
@@ -3627,8 +3627,7 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
             CBlockIndex* candidate{candidate_it->second};
             if (candidate->GetAncestor(disconnected_tip->nHeight) == disconnected_tip) {
                 // Children of failed blocks are marked as BLOCK_FAILED_VALID.
-                candidate->nStatus |= BLOCK_FAILED_VALID;
-                m_blockman.m_dirty_blockindex.insert(candidate);
+                MarkBlockFailed(candidate);
                 // If invalidated, the block is irrelevant for setBlockIndexCandidates
                 // and for m_best_header and can be removed from the cache.
                 candidate_it = highpow_outofchain_headers.erase(candidate_it);
@@ -3721,8 +3720,7 @@ void Chainstate::SetBlockFailureFlags(CBlockIndex* invalid_block, bool recalcula
     }
     for (auto& [_, block_index] : m_blockman.m_block_index) {
         if (invalid_block != &block_index && block_index.GetAncestor(invalid_block->nHeight) == invalid_block) {
-            block_index.nStatus |= BLOCK_FAILED_VALID;
-            m_blockman.m_dirty_blockindex.insert(&block_index);
+            MarkBlockFailed(&block_index);
         }
         if (recalculate_best_header && !(block_index.nStatus & BLOCK_FAILED_VALID) && m_chainman.m_best_header->nChainWork < block_index.nChainWork) {
             m_chainman.m_best_header = &block_index;
