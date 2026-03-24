@@ -1967,10 +1967,9 @@ void Chainstate::InvalidChainFound(CBlockIndex* pindexNew)
     if (!m_chainman.m_best_invalid || pindexNew->nChainWork > m_chainman.m_best_invalid->nChainWork) {
         m_chainman.m_best_invalid = pindexNew;
     }
-    SetBlockFailureFlags(pindexNew);
-    if (m_chainman.m_best_header != nullptr && m_chainman.m_best_header->GetAncestor(pindexNew->nHeight) == pindexNew) {
-        m_chainman.RecalculateBestHeader();
-    }
+    const bool recalculate_best_header{m_chainman.m_best_header != nullptr &&
+        m_chainman.m_best_header->GetAncestor(pindexNew->nHeight) == pindexNew};
+    SetBlockFailureFlags(pindexNew, recalculate_best_header);
 
     LogInfo("%s: invalid block=%s height=%d log2_work=%f date=%s", __func__,
       pindexNew->GetBlockHash().ToString(), pindexNew->nHeight,
@@ -3695,14 +3694,20 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
     return true;
 }
 
-void Chainstate::SetBlockFailureFlags(CBlockIndex* invalid_block)
+void Chainstate::SetBlockFailureFlags(CBlockIndex* invalid_block, bool recalculate_best_header)
 {
     AssertLockHeld(cs_main);
 
+    if (recalculate_best_header) {
+        m_chainman.m_best_header = m_chain.Tip();
+    }
     for (auto& [_, block_index] : m_blockman.m_block_index) {
         if (invalid_block != &block_index && block_index.GetAncestor(invalid_block->nHeight) == invalid_block) {
             block_index.nStatus |= BLOCK_FAILED_VALID;
             m_blockman.m_dirty_blockindex.insert(&block_index);
+        }
+        if (recalculate_best_header && !(block_index.nStatus & BLOCK_FAILED_VALID) && m_chainman.m_best_header->nChainWork < block_index.nChainWork) {
+            m_chainman.m_best_header = &block_index;
         }
     }
 }
@@ -3712,7 +3717,9 @@ void Chainstate::ResetBlockFailureFlags(CBlockIndex *pindex) {
 
     int nHeight = pindex->nHeight;
 
-    // Remove the invalidity flag from this block and all its descendants and ancestors.
+    // Remove the invalidity flag from this block and all its descendants and ancestors,
+    // and recalculate m_best_header in the same pass.
+    m_chainman.m_best_header = m_chain.Tip();
     for (auto& [_, block_index] : m_blockman.m_block_index) {
         if ((block_index.nStatus & BLOCK_FAILED_VALID) && (block_index.GetAncestor(nHeight) == pindex || pindex->GetAncestor(block_index.nHeight) == &block_index)) {
             block_index.nStatus &= ~BLOCK_FAILED_VALID;
@@ -3724,6 +3731,9 @@ void Chainstate::ResetBlockFailureFlags(CBlockIndex *pindex) {
                 // Reset invalid block marker if it was pointing to one of those.
                 m_chainman.m_best_invalid = nullptr;
             }
+        }
+        if (!(block_index.nStatus & BLOCK_FAILED_VALID) && m_chainman.m_best_header->nChainWork < block_index.nChainWork) {
+            m_chainman.m_best_header = &block_index;
         }
     }
 }
@@ -6237,17 +6247,6 @@ bool ChainstateManager::DeleteChainstate(Chainstate& chainstate)
 ChainstateRole Chainstate::GetRole() const
 {
     return ChainstateRole{.validated = m_assumeutxo == Assumeutxo::VALIDATED, .historical = bool{m_target_blockhash}};
-}
-
-void ChainstateManager::RecalculateBestHeader()
-{
-    AssertLockHeld(cs_main);
-    m_best_header = ActiveChain().Tip();
-    for (auto& entry : m_blockman.m_block_index) {
-        if (!(entry.second.nStatus & BLOCK_FAILED_VALID) && m_best_header->nChainWork < entry.second.nChainWork) {
-            m_best_header = &entry.second;
-        }
-    }
 }
 
 std::optional<int> ChainstateManager::BlocksAheadOfTip() const
