@@ -3235,6 +3235,13 @@ bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex*
                 if (state.IsInvalid()) {
                     // The block violates a consensus rule.
                     if (state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
+                        // in old PR comment says this isn't necessary https://github.com/bitcoin/bitcoin/pull/31533#discussion_r2607189790
+                        // but we still need it for m_best_invalid setting
+                        // 1 -> 2 -> [3 -> 4 -> 5]
+                        // vpindexToConnect = [5, 4, 3]
+                        // suppose 3 is valid: no InvalidChainFound()
+                        // suppose 4 is invalid: InvalidChainFound(4) inside ConnectTip and
+                        // InvalidChainFound(5) is here which sets m_best_invalid = 5
                         InvalidChainFound(vpindexToConnect.front());
                     }
                     state = BlockValidationState();
@@ -3606,6 +3613,12 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
 
         const bool best_header_needs_update{m_chainman.m_best_header->GetAncestor(disconnected_tip->nHeight) == disconnected_tip};
         if (best_header_needs_update) {
+            /* TODO: this need not necessarily be the m_best_header. there's an additional m_best_header = original, m_best_header = new_tip and below we're again doing m_best_header = original
+             * in the code below, in `m_chainman.m_best_header = candidate`, we might have set a better header in an alternate chain which isn't the main chain
+             * now we're again resetting it to an m_best_header which isn't really the best header.
+             * this doesn't have any observable effect since we're anyways again re-doing the calculation below in `m_chainman.m_best_header = candidate`
+             * and resetting it to the original actual best header in `m_chainman.m_best_header = candidate`
+             */
             // new_tip is definitely still valid at this point, but there may be better ones
             m_chainman.m_best_header = new_tip;
         }
@@ -3668,6 +3681,11 @@ bool Chainstate::InvalidateBlock(BlockValidationState& state, CBlockIndex* pinde
             }
         }
 
+        // Crypt-IQ is saying that if it's an out of chain block on which we called InvalidateBlock:
+        // ex: 1 -> 2 -> 3 -> 4 -> 5
+        //            -> 3' -> 4'
+        // if we call invalidateblock(3'), then m_best_invalid = 3' (and not 4')
+        // i think he's correct - https://github.com/bitcoin/bitcoin/pull/34254#discussion_r2756038660
         InvalidChainFound(to_mark_failed);
     }
 
@@ -5141,6 +5159,7 @@ bool ChainstateManager::ShouldCheckBlockIndex() const
 
 void ChainstateManager::CheckBlockIndex() const
 {
+    // should we have an m_best_invalid check? no - only thing we even use it for is logging
     if (!ShouldCheckBlockIndex()) {
         return;
     }
