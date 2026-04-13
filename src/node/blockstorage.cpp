@@ -274,13 +274,10 @@ void BlockManager::PruneOneBlockFile(const int fileNumber)
             // to be downloaded again in order to consider its chain, at which
             // point it would be considered as a candidate for
             // m_blocks_unlinked or setBlockIndexCandidates.
-            auto range = m_blocks_unlinked.equal_range(pindex->pprev);
-            while (range.first != range.second) {
-                std::multimap<CBlockIndex*, CBlockIndex*>::iterator _it = range.first;
-                range.first++;
-                if (_it->second == pindex) {
-                    m_blocks_unlinked.erase(_it);
-                }
+            auto it = m_blocks_unlinked.find(pindex->pprev);
+            if (it != m_blocks_unlinked.end()) {
+                it->second.erase(pindex);
+                if (it->second.empty()) m_blocks_unlinked.erase(it);
             }
         }
     }
@@ -481,7 +478,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                     pindex->m_chain_tx_count = pindex->pprev->m_chain_tx_count + pindex->nTx;
                 } else {
                     pindex->m_chain_tx_count = 0;
-                    m_blocks_unlinked.insert(std::make_pair(pindex->pprev, pindex));
+                    m_blocks_unlinked[pindex->pprev].insert(pindex);
                 }
             } else {
                 pindex->m_chain_tx_count = pindex->nTx;

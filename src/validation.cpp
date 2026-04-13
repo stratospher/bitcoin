@@ -3148,23 +3148,7 @@ CBlockIndex* Chainstate::FindMostWorkChain()
                     // then add back to m_blocks_unlinked, so that if the block arrives in the future
                     // we can try adding to setBlockIndexCandidates again.
                     if (fMissingData && !fFailedChain) {
-                        // Avoid duplicate entries in m_blocks_unlinked. If the same entry is
-                        // processed twice in ReceivedBlockTransactions(), it may be re-added to
-                        // setBlockIndexCandidates with a modified nSequenceId, breaking ordering
-                        // guarantees and leading to undefined behavior.
-                        auto range = m_blockman.m_blocks_unlinked.equal_range(pindexFailed->pprev);
-                        bool found = false;
-
-                        for (auto it = range.first; it != range.second; ++it) {
-                            if (it->second == pindexFailed) {
-                                found = true;
-                                break;
-                            }
-                        }
-
-                        if (!found) {
-                            m_blockman.m_blocks_unlinked.emplace(pindexFailed->pprev, pindexFailed);
-                        }
+                        m_blockman.m_blocks_unlinked[pindexFailed->pprev].insert(pindexFailed);
                     }
                     setBlockIndexCandidates.erase(pindexFailed);
                 }
@@ -3818,17 +3802,17 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
             for (const auto& c : m_chainstates) {
                 c->TryAddBlockIndexCandidate(pindex);
             }
-            std::pair<std::multimap<CBlockIndex*, CBlockIndex*>::iterator, std::multimap<CBlockIndex*, CBlockIndex*>::iterator> range = m_blockman.m_blocks_unlinked.equal_range(pindex);
-            while (range.first != range.second) {
-                std::multimap<CBlockIndex*, CBlockIndex*>::iterator it = range.first;
-                queue.push_back(it->second);
-                range.first++;
+            auto it = m_blockman.m_blocks_unlinked.find(pindex);
+            if (it != m_blockman.m_blocks_unlinked.end()) {
+                for (CBlockIndex* child : it->second) {
+                    queue.push_back(child);
+                }
                 m_blockman.m_blocks_unlinked.erase(it);
             }
         }
     } else {
         if (pindexNew->pprev && pindexNew->pprev->IsValid(BLOCK_VALID_TREE)) {
-            m_blockman.m_blocks_unlinked.insert(std::make_pair(pindexNew->pprev, pindexNew));
+            m_blockman.m_blocks_unlinked[pindexNew->pprev].insert(pindexNew);
         }
     }
 }
@@ -5353,16 +5337,9 @@ void ChainstateManager::CheckBlockIndex() const
             }
         }
         // Check whether this block is in m_blocks_unlinked.
-        auto rangeUnlinked{m_blockman.m_blocks_unlinked.equal_range(pindex->pprev)};
-        bool foundInUnlinked = false;
-        while (rangeUnlinked.first != rangeUnlinked.second) {
-            assert(rangeUnlinked.first->first == pindex->pprev);
-            if (rangeUnlinked.first->second == pindex) {
-                foundInUnlinked = true;
-                break;
-            }
-            rangeUnlinked.first++;
-        }
+        const auto itUnlinked{m_blockman.m_blocks_unlinked.find(pindex->pprev)};
+        bool foundInUnlinked = itUnlinked != m_blockman.m_blocks_unlinked.end() &&
+                               itUnlinked->second.contains(const_cast<CBlockIndex*>(pindex));
         if (pindex->pprev && (pindex->nStatus & BLOCK_HAVE_DATA) && pindexFirstNeverProcessed != nullptr && pindexFirstInvalid == nullptr) {
             // If this block has block data available, some parent was never received, and has no invalid parents, it must be in m_blocks_unlinked.
             assert(foundInUnlinked);

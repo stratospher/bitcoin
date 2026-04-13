@@ -352,7 +352,7 @@ public:
      * All pairs A->B, where A (or one of its ancestors) misses transactions, but B has transactions.
      * Pruned nodes may have entries where A is missing data.
      */
-    std::multimap<CBlockIndex*, CBlockIndex*> m_blocks_unlinked;
+    std::map<CBlockIndex*, std::set<CBlockIndex*>> m_blocks_unlinked;
 
     std::unique_ptr<BlockTreeDB> m_block_tree_db GUARDED_BY(::cs_main);
 
