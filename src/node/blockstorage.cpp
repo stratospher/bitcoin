@@ -276,7 +276,7 @@ void BlockManager::PruneOneBlockFile(const int fileNumber)
             // m_blocks_unlinked or setBlockIndexCandidates.
             auto it = m_blocks_unlinked.find(pindex->pprev);
             if (it != m_blocks_unlinked.end()) {
-                it->second.erase(pindex);
+                std::erase(it->second, pindex);
                 if (it->second.empty()) m_blocks_unlinked.erase(it);
             }
         }
@@ -478,7 +478,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                     pindex->m_chain_tx_count = pindex->pprev->m_chain_tx_count + pindex->nTx;
                 } else {
                     pindex->m_chain_tx_count = 0;
-                    m_blocks_unlinked[pindex->pprev].insert(pindex);
+                    m_blocks_unlinked[pindex->pprev].push_back(pindex);
                 }
             } else {
                 pindex->m_chain_tx_count = pindex->nTx;

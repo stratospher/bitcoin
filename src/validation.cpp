@@ -3148,7 +3148,10 @@ CBlockIndex* Chainstate::FindMostWorkChain()
                     // then add back to m_blocks_unlinked, so that if the block arrives in the future
                     // we can try adding to setBlockIndexCandidates again.
                     if (fMissingData && !fFailedChain) {
-                        m_blockman.m_blocks_unlinked[pindexFailed->pprev].insert(pindexFailed);
+                        auto& children = m_blockman.m_blocks_unlinked[pindexFailed->pprev];
+                        if (std::ranges::find(children, pindexFailed) == children.end()) {
+                            children.push_back(pindexFailed);
+                        }
                     }
                     setBlockIndexCandidates.erase(pindexFailed);
                 }
@@ -3812,7 +3815,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
         }
     } else {
         if (pindexNew->pprev && pindexNew->pprev->IsValid(BLOCK_VALID_TREE)) {
-            m_blockman.m_blocks_unlinked[pindexNew->pprev].insert(pindexNew);
+            m_blockman.m_blocks_unlinked[pindexNew->pprev].push_back(pindexNew);
         }
     }
 }
@@ -5339,7 +5342,7 @@ void ChainstateManager::CheckBlockIndex() const
         // Check whether this block is in m_blocks_unlinked.
         const auto itUnlinked{m_blockman.m_blocks_unlinked.find(pindex->pprev)};
         bool foundInUnlinked = itUnlinked != m_blockman.m_blocks_unlinked.end() &&
-                               itUnlinked->second.contains(const_cast<CBlockIndex*>(pindex));
+                               std::ranges::find(itUnlinked->second, pindex) != itUnlinked->second.end();
         if (pindex->pprev && (pindex->nStatus & BLOCK_HAVE_DATA) && pindexFirstNeverProcessed != nullptr && pindexFirstInvalid == nullptr) {
             // If this block has block data available, some parent was never received, and has no invalid parents, it must be in m_blocks_unlinked.
             assert(foundInUnlinked);

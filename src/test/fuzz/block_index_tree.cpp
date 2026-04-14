@@ -168,7 +168,7 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                     prune_block->nUndoPos = 0;
                     auto it = blockman.m_blocks_unlinked.find(prune_block->pprev);
                     if (it != blockman.m_blocks_unlinked.end()) {
-                        it->second.erase(prune_block);
+                        std::erase(it->second, prune_block);
                         if (it->second.empty()) blockman.m_blocks_unlinked.erase(it);
                     }
                     pruned_blocks.push_back(prune_block);
