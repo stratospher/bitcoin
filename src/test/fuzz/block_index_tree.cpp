@@ -58,6 +58,7 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
     std::vector<CBlockIndex*> blocks;
     blocks.push_back(genesis);
     bool abort_run{false};
+    std::vector<std::pair<CBlockIndex*, CBlockIndex*>> deferred_unlinked_erases;
     DPRINT("START\n");
     DPRINT("chain.m_chain.Height() = %d\n", chainman.ActiveChainstate().m_chain.Height());
     DPRINT("Genesis block (height = %d, block hash = %s, chainwork = %s)\n", genesis->nHeight, genesis->GetBlockHash().ToString().c_str(), genesis->nChainWork.ToString().c_str());
@@ -213,15 +214,15 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                     prune_block->nFile = 0;
                     prune_block->nDataPos = 0;
                     prune_block->nUndoPos = 0;
-                    // auto range = blockman.m_blocks_unlinked.equal_range(prune_block->pprev);
-                    // while (range.first != range.second) {
-                    //     std::multimap<CBlockIndex*, CBlockIndex*>::iterator _it = range.first;
-                    //     range.first++;
-                    //     if (_it->second == prune_block) {
-                    //         DPRINT("removing from m_blocks_unlinked: %s -> %s\n", _it->first->ToString().c_str(), _it->second->ToString().c_str());
-                    //         blockman.m_blocks_unlinked.erase(_it);
-                    //     }
-                    // }
+                    auto range = blockman.m_blocks_unlinked.equal_range(prune_block->pprev);
+                    while (range.first != range.second) {
+                        std::multimap<CBlockIndex*, CBlockIndex*>::iterator _it = range.first;
+                        range.first++;
+                        if (_it->second == prune_block) {
+                            DPRINT("will remove from m_blocks_unlinked later if it is still there: %s -> %s\n", _it->first->ToString().c_str(), _it->second->ToString().c_str());
+                            deferred_unlinked_erases.emplace_back(prune_block->pprev, prune_block);
+                        }
+                    }
                     pruned_blocks.push_back(prune_block);
                 }
                 DPRINT("\n\n");
@@ -248,6 +249,19 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
     }
     if (!abort_run) {
         DPRINT("Running CBI - later we can take it out of if\n");
+        {
+            LOCK(cs_main);
+            for (const auto& [key, val] : deferred_unlinked_erases) {
+                auto range = blockman.m_blocks_unlinked.equal_range(key);
+                for (auto it = range.first; it != range.second; ) {
+                    if (it->second == val) {
+                        it = blockman.m_blocks_unlinked.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+        }
         chainman.CheckBlockIndex();
     }
     DPRINT("END\n");
