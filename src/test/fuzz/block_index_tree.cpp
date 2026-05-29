@@ -236,6 +236,9 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                 size_t i = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, num_pruned - 1);
                 CBlockIndex* index = pruned_blocks[i];
                 assert(!(index->nStatus & BLOCK_HAVE_DATA));
+                if (chainman.ActiveChainstate().setBlockIndexCandidates.contains(index)) {
+                    return;
+                }
 
                 // Apply the deferred PruneOneBlockFile cleanup now, before RBT (it should have happened, but we didn't do it to protect some impossible sceanrios)
                 auto deferred_it = std::find(deferred_unlinked_erases.begin(),deferred_unlinked_erases.end(), std::make_pair(index->pprev, index));
