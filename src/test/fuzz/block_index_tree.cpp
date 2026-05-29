@@ -203,6 +203,9 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                 CBlockIndex* prune_block = PickValue(fuzzed_data_provider, blocks);
                 DPRINT("prune_height = %d\n", prune_block->nHeight);
                 if (prune_block != chain.Tip() && (prune_block->nStatus & BLOCK_HAVE_DATA)) {
+                    if (chainman.ActiveChainstate().setBlockIndexCandidates.contains(prune_block)) {
+                        return;
+                    }
                     blockman.m_have_pruned = true;
                     DPRINT("pruning block (height = %d, block hash = %s, chainwork = %s)\n", prune_block->nHeight, prune_block->GetBlockHash().ToString().c_str(), prune_block->nChainWork.ToString().c_str());
                     prune_block->nStatus &= ~BLOCK_HAVE_DATA;
