@@ -5252,6 +5252,24 @@ void ChainstateManager::CheckBlockIndex() const
         assert(((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TRANSACTIONS) == (pindex->nTx > 0)); // This is pruning-independent.
         // All parents having had data (at some point) is equivalent to all parents being VALID_TRANSACTIONS, which is equivalent to HaveNumChainTxs().
         // HaveNumChainTxs will also be set in the assumeutxo snapshot block from snapshot metadata.
+        // we are checking:
+            // pindexFirstNeverProcessed == nullptr means all the ancestors of pindex are received (nTx is present for all of them)
+            // pindexFirstNotTransactionsValid == nullptr means all the ancestors of pindex have BLOCK_VALID_TRANSACTION
+            // (TODO: nTx and BLOCK_VALID_TRANSACTION are set in same function RBT, not sure why we have both)
+            // both of these means we have set m_chain_tx_count
+
+        // even if some ancestor of pindex doesn't have data because it was pruned away
+        // we still retain nTx and BLOCK_VALID_TRANSACTION
+        // so why is the fuzz test failing in this theoretical scenario
+        // 1. parent not received
+        // 2. child received (HAVE_DATA, nTx, m_chain_tx_count=0) - add child to m_blocks_unlinked
+        // 3. child pruned away (no HAVE_DATA, nTx, m_chain_tx_count=0) - remove child from m_blocks_unlinked
+        // 4. parent received  (HAVE_DATA, nTx, m_chain_tx_count)
+        // CBI on child (all ancestors of pindex have been received but m_chain_tx_count = 0)
+
+        // it's impossible IRL to prune child (without pruning parent)
+        // so the fuzz test isn't actually IRL and i'm going to remove the m_blocks_unlinked clearing
+        // when we prue a block so that RBT can do the needful and update m_chain_tx_count
         assert((pindexFirstNeverProcessed == nullptr || pindex == snap_base) == pindex->HaveNumChainTxs());
         assert((pindexFirstNotTransactionsValid == nullptr || pindex == snap_base) == pindex->HaveNumChainTxs());
         assert(pindex->nHeight == nHeight); // nHeight must be consistent.
