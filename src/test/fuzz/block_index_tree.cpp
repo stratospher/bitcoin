@@ -236,6 +236,20 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                 size_t i = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, num_pruned - 1);
                 CBlockIndex* index = pruned_blocks[i];
                 assert(!(index->nStatus & BLOCK_HAVE_DATA));
+
+                // Apply the deferred PruneOneBlockFile cleanup now, before RBT (it should have happened, but we didn't do it to protect some impossible sceanrios)
+                auto deferred_it = std::find(deferred_unlinked_erases.begin(),deferred_unlinked_erases.end(), std::make_pair(index->pprev, index));
+                if (deferred_it != deferred_unlinked_erases.end()) {
+                    auto range = blockman.m_blocks_unlinked.equal_range(index->pprev);
+                    for (auto it = range.first; it != range.second; ++it) {
+                        if (it->second == index) {
+                            blockman.m_blocks_unlinked.erase(it);
+                            break;  // todo: should we make sure this entry is always present in m_blocks_unlinked using some assert maybe?
+                        }
+                    }
+                    deferred_unlinked_erases.erase(deferred_it);
+                }
+
                 CBlock block;
                 block.vtx = std::vector<CTransactionRef>(index->nTx); // Set the number of tx to the prior value.
                 FlatFilePos pos(0, fuzzed_data_provider.ConsumeIntegralInRange<int>(1, 1000));
