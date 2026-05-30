@@ -3142,12 +3142,15 @@ CBlockIndex* Chainstate::FindMostWorkChain()
                 }
                 // Remove the entire chain from the set.
                 for (CBlockIndex *pindexFailed = pindexNew; pindexFailed != pindexTest; pindexFailed = pindexFailed->pprev) {
+                    // If we're missing data and not a descendant of an invalid block,
+                    // then add back to m_blocks_unlinked, so that if the block arrives in the future
+                    // we can try adding to setBlockIndexCandidates again.
                     if (fMissingData && !fFailedChain) {
-                        // If we're missing data and not a descendant of an invalid block,
-                        // then add back to m_blocks_unlinked, so that if the block arrives in the future
-                        // we can try adding to setBlockIndexCandidates again.
-                        m_blockman.m_blocks_unlinked.insert(
-                            std::make_pair(pindexFailed->pprev, pindexFailed));
+                        // Avoid duplicate entries in m_blocks_unlinked. If the same entry is
+                        // processed twice in ReceivedBlockTransactions(), it may be re-added to
+                        // setBlockIndexCandidates with a modified nSequenceId, breaking ordering
+                        // guarantees and leading to undefined behavior.
+                        m_blockman.AddUnlinkedBlock(pindexFailed);
                     }
                     setBlockIndexCandidates.erase(pindexFailed);
                 }
@@ -3811,7 +3814,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
         }
     } else {
         if (pindexNew->pprev && pindexNew->pprev->IsValid(BLOCK_VALID_TREE)) {
-            m_blockman.m_blocks_unlinked.insert(std::make_pair(pindexNew->pprev, pindexNew));
+            m_blockman.AddUnlinkedBlock(pindexNew);
         }
     }
 }
@@ -5248,6 +5251,24 @@ void ChainstateManager::CheckBlockIndex() const
         assert(((pindex->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TRANSACTIONS) == (pindex->nTx > 0)); // This is pruning-independent.
         // All parents having had data (at some point) is equivalent to all parents being VALID_TRANSACTIONS, which is equivalent to HaveNumChainTxs().
         // HaveNumChainTxs will also be set in the assumeutxo snapshot block from snapshot metadata.
+        // we are checking:
+            // pindexFirstNeverProcessed == nullptr means all the ancestors of pindex are received (nTx is present for all of them)
+            // pindexFirstNotTransactionsValid == nullptr means all the ancestors of pindex have BLOCK_VALID_TRANSACTION
+            // (TODO: nTx and BLOCK_VALID_TRANSACTION are set in same function RBT, not sure why we have both)
+            // both of these means we have set m_chain_tx_count
+
+        // even if some ancestor of pindex doesn't have data because it was pruned away
+        // we still retain nTx and BLOCK_VALID_TRANSACTION
+        // so why is the fuzz test failing in this theoretical scenario
+        // 1. parent not received
+        // 2. child received (HAVE_DATA, nTx, m_chain_tx_count=0) - add child to m_blocks_unlinked
+        // 3. child pruned away (no HAVE_DATA, nTx, m_chain_tx_count=0) - remove child from m_blocks_unlinked
+        // 4. parent received  (HAVE_DATA, nTx, m_chain_tx_count)
+        // CBI on child (all ancestors of pindex have been received but m_chain_tx_count = 0)
+
+        // it's impossible IRL to prune child (without pruning parent)
+        // so the fuzz test isn't actually IRL and i'm going to remove the m_blocks_unlinked clearing
+        // when we prue a block so that RBT can do the needful and update m_chain_tx_count
         assert((pindexFirstNeverProcessed == nullptr || pindex == snap_base) == pindex->HaveNumChainTxs());
         assert((pindexFirstNotTransactionsValid == nullptr || pindex == snap_base) == pindex->HaveNumChainTxs());
         assert(pindex->nHeight == nHeight); // nHeight must be consistent.
@@ -5338,13 +5359,12 @@ void ChainstateManager::CheckBlockIndex() const
         // Check whether this block is in m_blocks_unlinked.
         auto rangeUnlinked{m_blockman.m_blocks_unlinked.equal_range(pindex->pprev)};
         bool foundInUnlinked = false;
-        while (rangeUnlinked.first != rangeUnlinked.second) {
-            assert(rangeUnlinked.first->first == pindex->pprev);
-            if (rangeUnlinked.first->second == pindex) {
+        for (auto it = rangeUnlinked.first; it != rangeUnlinked.second; ++it) {
+            assert(it->first == pindex->pprev);
+            if (it->second == pindex) {
+                assert(!foundInUnlinked); // No duplicates in m_blocks_unlinked
                 foundInUnlinked = true;
-                break;
             }
-            rangeUnlinked.first++;
         }
         if (pindex->pprev && (pindex->nStatus & BLOCK_HAVE_DATA) && pindexFirstNeverProcessed != nullptr && pindexFirstInvalid == nullptr) {
             // If this block has block data available, some parent was never received, and has no invalid parents, it must be in m_blocks_unlinked.

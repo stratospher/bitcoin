@@ -50,6 +50,7 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
     std::vector<CBlockIndex*> blocks;
     blocks.push_back(genesis);
     bool abort_run{false};
+    std::vector<std::pair<CBlockIndex*, CBlockIndex*>> deferred_unlinked_erases;
 
     std::vector<CBlockIndex*> pruned_blocks;
 
@@ -153,13 +154,15 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
             [&] {
                 // Prune chain - dealing with block files is beyond the scope of this test, so just prune random blocks, making no assumptions
                 // about what blocks are pruned together because they are in the same block file.
-                // Also don't prune blocks outside of the chain for now - this would make the fuzzer crash because of the problem described in
-                // https://github.com/bitcoin/bitcoin/issues/31512
                 LOCK(cs_main);
                 auto& chain = chainman.ActiveChain();
-                int prune_height = fuzzed_data_provider.ConsumeIntegralInRange<int>(0, chain.Height());
-                CBlockIndex* prune_block{chain[prune_height]};
+                // int prune_height = fuzzed_data_provider.ConsumeIntegralInRange<int>(0, chain.Height());
+                // CBlockIndex* prune_block{chain[prune_height]};
+                CBlockIndex* prune_block = PickValue(fuzzed_data_provider, blocks);
                 if (prune_block != chain.Tip() && (prune_block->nStatus & BLOCK_HAVE_DATA)) {
+                    if (chainman.ActiveChainstate().setBlockIndexCandidates.contains(prune_block)) {
+                        return;
+                    }
                     blockman.m_have_pruned = true;
                     prune_block->nStatus &= ~BLOCK_HAVE_DATA;
                     prune_block->nStatus &= ~BLOCK_HAVE_UNDO;
@@ -171,6 +174,7 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                         std::multimap<CBlockIndex*, CBlockIndex*>::iterator _it = range.first;
                         range.first++;
                         if (_it->second == prune_block) {
+                            deferred_unlinked_erases.emplace_back(prune_block->pprev, prune_block);
                             blockman.m_blocks_unlinked.erase(_it);
                         }
                     }
@@ -185,6 +189,23 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
                 size_t i = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, num_pruned - 1);
                 CBlockIndex* index = pruned_blocks[i];
                 assert(!(index->nStatus & BLOCK_HAVE_DATA));
+                if (chainman.ActiveChainstate().setBlockIndexCandidates.contains(index)) {
+                    return;
+                }
+
+                // Apply the deferred PruneOneBlockFile cleanup now, before RBT (it should have happened, but we didn't do it to protect some impossible sceanrios)
+                auto deferred_it = std::find(deferred_unlinked_erases.begin(),deferred_unlinked_erases.end(), std::make_pair(index->pprev, index));
+                if (deferred_it != deferred_unlinked_erases.end()) {
+                    auto range = blockman.m_blocks_unlinked.equal_range(index->pprev);
+                    for (auto it = range.first; it != range.second; ++it) {
+                        if (it->second == index) {
+                            blockman.m_blocks_unlinked.erase(it);
+                            break;  // todo: should we make sure this entry is always present in m_blocks_unlinked using some assert maybe?
+                        }
+                    }
+                    deferred_unlinked_erases.erase(deferred_it);
+                }
+
                 CBlock block;
                 block.vtx = std::vector<CTransactionRef>(index->nTx); // Set the number of tx to the prior value.
                 FlatFilePos pos(0, fuzzed_data_provider.ConsumeIntegralInRange<int>(1, 1000));
@@ -195,6 +216,19 @@ FUZZ_TARGET(block_index_tree, .init = initialize_block_index_tree)
             });
     }
     if (!abort_run) {
+        {
+            LOCK(cs_main);
+            for (const auto& [key, val] : deferred_unlinked_erases) {
+                auto range = blockman.m_blocks_unlinked.equal_range(key);
+                for (auto it = range.first; it != range.second; ) {
+                    if (it->second == val) {
+                        it = blockman.m_blocks_unlinked.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+        }
         chainman.CheckBlockIndex();
     }
 
