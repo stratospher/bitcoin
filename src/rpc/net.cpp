@@ -16,6 +16,7 @@
 #include <net_processing.h>
 #include <net_types.h>
 #include <netbase.h>
+#include <netmessagemaker.h>
 #include <node/context.h>
 #ifdef ENABLE_EMBEDDED_ASMAP
 #include <node/data/ip_asn.dat.h>
@@ -24,6 +25,7 @@
 #include <node/warnings.h>
 #include <policy/settings.h>
 #include <protocol.h>
+#include <random.h>
 #include <rpc/blockchain.h>
 #include <rpc/protocol.h>
 #include <rpc/server_util.h>
@@ -38,8 +40,10 @@
 #include <util/translation.h>
 #include <validation.h>
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1089,6 +1093,138 @@ static RPCMethod sendmsgtopeer()
     };
 }
 
+// Peers from tried table that sendaddrtorandompeer has already sent the fake-address into so that a fresh peer is picked every time.
+// Not persisted across restarts.
+static GlobalMutex g_sendaddr_sent_peers_mutex;
+static std::set<CService> g_sendaddr_sent_peers GUARDED_BY(g_sendaddr_sent_peers_mutex);
+
+static RPCMethod sendaddrtorandompeer()
+{
+    return RPCMethod{
+        "sendaddrtorandompeer",
+        "Pick a random peer from this node's tried table\n"
+        "   1. open an outbound connection\n"
+        "   2. wait upto 10 seconds till VERACK is received (meaning peer is present inside ForEachNode)\n"
+        "   3. send an ADDR message\n"
+        "   4. briefly stay connected for 5 seconds, then disconnect.\n"
+        "If a peer can't be reached or the handshake doesn't complete in time, another peer is picked\n"
+        "from the tried table until the addr is sent or 'max_tries' is exhausted.\n"
+        "The address is stamped with the current time and advertised with NODE_NETWORK|NODE_WITNESS, and\n"
+        "must be publicly routable.\n"
+        "Intended to be run on a node started with -connect=0 -listen=0, so the picked peer's address-relay\n"
+        "token bucket is spent only by this message (a fresh connection starts with exactly one token).\n"
+        "Note: whether the peer actually relays the address onward is not observable from this side (addr has\n"
+        "no acknowledgement); the post-send wait only lets the peer process and queue the relay before we\n"
+        "disconnect. This RPC is for testing only and blocks until it succeeds or gives up.",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to advertise as \"ip\" or \"ip:port\" (default port for the current network)."},
+            {"max_tries", RPCArg::Type::NUM, RPCArg::Default{100}, "Maximum number of peers to try before giving up."},
+            {"wait", RPCArg::Type::NUM, RPCArg::Default{5}, "Seconds to stay connected after sending (so the peer can process and queue relay of the addr) before disconnecting."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::STR, "address", "The advertised address that was sent"},
+                {RPCResult::Type::STR, "peer", "The ip:port of the peer the addr message was sent to"},
+                {RPCResult::Type::NUM_TIME, "time", "The UNIX epoch time (seconds) stamped as nTime on the address and at which it was sent"},
+            }},
+        RPCExamples{
+            HelpExampleCli("sendaddrtorandompeer", "\"1.2.3.4:8333\"")
+            + HelpExampleRpc("sendaddrtorandompeer", "\"1.2.3.4:8333\"")},
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue {
+            const std::string addr_str{request.params[0].get_str()};
+            const std::optional<CService> service{Lookup(addr_str, Params().GetDefaultPort(), /*fAllowLookup=*/false)};
+            if (!service.has_value()) {
+                throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, strprintf("Invalid IP address or port: %s", addr_str));
+            }
+            CAddress advertised{MaybeFlipIPv6toCJDNS(service.value()), ServiceFlags{NODE_NETWORK | NODE_WITNESS}};
+            if (!advertised.IsRoutable()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Address is not publicly routable (won't be relayed): %s", addr_str));
+            }
+
+            const int max_tries{request.params[1].isNull() ? 100 : request.params[1].getInt<int>()};
+            const auto wait{std::chrono::seconds{request.params[2].isNull() ? 5 : request.params[2].getInt<int>()}};
+
+            NodeContext& node = EnsureAnyNodeContext(request.context);
+            CConnman& connman = EnsureConnman(node);
+            AddrMan& addrman = EnsureAddrman(node);
+            const bool use_v2transport{static_cast<bool>(connman.GetLocalServices() & NODE_P2P_V2)};
+
+            constexpr auto HANDSHAKE_TIMEOUT{std::chrono::seconds{10}};
+            constexpr auto POLL_INTERVAL{std::chrono::milliseconds{100}};
+
+            // Snapshot the tried table, shuffle for variety across calls, and try them in turn without repeats.
+            std::vector<CAddress> tried;
+            for (const auto& entry : addrman.GetEntries(/*from_tried=*/true)) tried.push_back(entry.first);
+            std::shuffle(tried.begin(), tried.end(), FastRandomContext());
+
+            int tries{0};
+            for (const CAddress& target : tried) {
+                // Skip peers already injected into on an earlier call in this bitcoind run.
+                {
+                    LOCK(g_sendaddr_sent_peers_mutex);
+                    if (g_sendaddr_sent_peers.contains(target)) continue;
+                }
+                if (tries++ >= max_tries) break;
+
+                // Blocking TCP connect. false => unreachable/banned/already-connected: try another peer.
+                // MANUAL (like `addnode onetry`) so this works under -connect=0 without capacity gating.
+                if (!connman.OpenNetworkConnection(target, /*fCountFailure=*/false, /*grant_outbound=*/{},
+                                                   /*pszDest=*/nullptr, ConnectionType::MANUAL,
+                                                   use_v2transport, /*proxy_override=*/std::nullopt)) {
+                    continue;
+                }
+
+                // Wait for the version/verack handshake. ForEachNode only visits fully-connected nodes,
+                // so the target appearing with a matching address is our readiness signal.
+                NodeId target_id{-1};
+                const auto deadline{std::chrono::steady_clock::now() + HANDSHAKE_TIMEOUT};
+                while (std::chrono::steady_clock::now() < deadline) {
+                    connman.ForEachNode([&](CNode* pnode) {
+                        if (target_id == -1 && static_cast<const CService&>(pnode->addr) == static_cast<const CService&>(target)) {
+                            target_id = pnode->GetId();
+                        }
+                    });
+                    if (target_id != -1) break;
+                    UninterruptibleSleep(POLL_INTERVAL);
+                }
+                if (target_id == -1) {
+                    connman.DisconnectNode(static_cast<const CNetAddr&>(target)); // drop the half-open connection
+                    continue;
+                }
+
+                // Stamp at the moment of sending and push a single-address ADDR.
+                const auto now{Now<NodeSeconds>()};
+                advertised.nTime = now;
+                std::string peer_addr;
+                const bool sent{connman.ForNode(target_id, [&](CNode* pnode) {
+                    peer_addr = pnode->addr.ToStringAddrPort();
+                    connman.PushMessage(pnode, NetMsg::Make(NetMsgType::ADDR, CAddress::V1_NETWORK(std::vector<CAddress>{advertised})));
+                    return true;
+                })};
+                if (!sent) continue; // node vanished between handshake and send
+
+                // Stay connected briefly so the peer processes (and queues relay of) the addr, then disconnect.
+                UninterruptibleSleep(wait);
+                connman.DisconnectNode(target_id);
+
+                {
+                    LOCK(g_sendaddr_sent_peers_mutex);
+                    g_sendaddr_sent_peers.insert(target);
+                }
+
+                UniValue result(UniValue::VOBJ);
+                result.pushKV("address", advertised.ToStringAddrPort());
+                result.pushKV("peer", peer_addr);
+                result.pushKV("time", TicksSinceEpoch<std::chrono::seconds>(now));
+                return result;
+            }
+
+            throw JSONRPCError(RPC_MISC_ERROR, "Could not send addr to any tried peer (exhausted max_tries or the tried table is empty)");
+        },
+    };
+}
+
 static RPCMethod getaddrmaninfo()
 {
     return RPCMethod{
@@ -1279,6 +1415,7 @@ void RegisterNetRPCCommands(CRPCTable& t)
         {"hidden", &addconnection},
         {"hidden", &addpeeraddress},
         {"hidden", &sendmsgtopeer},
+        {"hidden", &sendaddrtorandompeer},
         {"hidden", &getrawaddrman},
     };
     for (const auto& c : commands) {
