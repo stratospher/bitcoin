@@ -5747,6 +5747,16 @@ void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer
         if (interruptMsgProc)
             return;
 
+        static const CSubNet our_special_subnet{LookupSubNet("53.0.0.0/8")};
+        if (our_special_subnet.Match(addr)) {
+            LogInfo("### received addr=%s nTime=%d wire_time=%d peer=%d%s\n",
+                      addr.ToStringAddrPort(),
+                      TicksSinceEpoch<std::chrono::seconds>(addr.nTime),
+                      TicksSinceEpoch<std::chrono::seconds>(current_time),
+                      pfrom.GetId(),
+                      fLogIPs ? strprintf(" (%s)", pfrom.addr.ToStringAddrPort()) : "");
+        }
+
         // Apply rate limiting.
         if (peer.m_addr_token_bucket < 1.0) {
             if (rate_limited) {
