@@ -1120,6 +1120,7 @@ static RPCMethod sendaddrtorandompeer()
             {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to advertise as \"ip\" or \"ip:port\" (default port for the current network)."},
             {"max_tries", RPCArg::Type::NUM, RPCArg::Default{100}, "Maximum number of peers to try before giving up."},
             {"wait", RPCArg::Type::NUM, RPCArg::Default{5}, "Seconds to stay connected after sending (so the peer can process and queue relay of the addr) before disconnecting."},
+            {"target", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Testing only: connect to this specific \"ip:port\" instead of picking a random peer from the tried table. Bypasses the already-sent-peer skip so the same target can be used repeatedly."},
         },
         RPCResult{
             RPCResult::Type::OBJ, "", "",
@@ -1153,15 +1154,26 @@ static RPCMethod sendaddrtorandompeer()
             constexpr auto HANDSHAKE_TIMEOUT{std::chrono::seconds{10}};
             constexpr auto POLL_INTERVAL{std::chrono::milliseconds{100}};
 
-            // Snapshot the tried table, shuffle for variety across calls, and try them in turn without repeats.
+            // Testing override: if a specific target is given, connect only to it; otherwise snapshot the
+            // tried table and shuffle for variety across calls, trying entries in turn without repeats.
+            const bool explicit_target{!request.params[3].isNull()};
             std::vector<CAddress> tried;
-            for (const auto& entry : addrman.GetEntries(/*from_tried=*/true)) tried.push_back(entry.first);
-            std::shuffle(tried.begin(), tried.end(), FastRandomContext());
+            if (explicit_target) {
+                const std::string target_str{request.params[3].get_str()};
+                const std::optional<CService> target_service{Lookup(target_str, Params().GetDefaultPort(), /*fAllowLookup=*/false)};
+                if (!target_service.has_value()) {
+                    throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, strprintf("Invalid target address or port: %s", target_str));
+                }
+                tried.emplace_back(target_service.value(), NODE_NONE);
+            } else {
+                for (const auto& entry : addrman.GetEntries(/*from_tried=*/true)) tried.push_back(entry.first);
+                std::shuffle(tried.begin(), tried.end(), FastRandomContext());
+            }
 
             int tries{0};
             for (const CAddress& target : tried) {
-                // Skip peers already injected into on an earlier call in this bitcoind run.
-                {
+                // Skip peers already injected into on an earlier call in this bitcoind run (random mode only).
+                if (!explicit_target) {
                     LOCK(g_sendaddr_sent_peers_mutex);
                     if (g_sendaddr_sent_peers.contains(target)) continue;
                 }

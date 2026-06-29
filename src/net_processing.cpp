@@ -2348,7 +2348,12 @@ void PeerManagerImpl::RelayAddress(NodeId originator,
         }
     };
 
+    // Testing instrumentation: log relay of sentinel addresses (53.0.0.0/8) and their target peer.
+    static const CSubNet sentinel_subnet{LookupSubNet("53.0.0.0/8")};
     for (unsigned int i = 0; i < nRelayNodes && best[i].first != 0; i++) {
+        if (sentinel_subnet.Match(addr)) {
+            LogInfo("### relaying addr=%s to peer=%d\n", addr.ToStringAddrPort(), best[i].second->m_id);
+        }
         PushAddress(*best[i].second, addr);
     }
 }
