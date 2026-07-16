@@ -509,6 +509,10 @@ void AddrManImpl::MakeTried(AddrInfo& info, nid_type nId)
         // find which new bucket it belongs to
         int nUBucket = infoOld.GetNewBucket(nKey, m_netgroupman);
         int nUBucketPos = infoOld.GetBucketPosition(nKey, true, nUBucket);
+        std::string collateral{"none"};
+        if (const nid_type occupant{vvNew[nUBucket][nUBucketPos]}; occupant != -1) {
+            collateral = mapInfo[occupant].ToStringAddrPort();
+        }
         ClearNew(nUBucket, nUBucketPos);
         assert(vvNew[nUBucket][nUBucketPos] == -1);
 
@@ -519,6 +523,11 @@ void AddrManImpl::MakeTried(AddrInfo& info, nid_type nId)
         m_network_counts[infoOld.GetNetwork()].n_new++;
         LogDebug(BCLog::ADDRMAN, "Moved %s from tried[%i][%i] to new[%i][%i] to make space\n",
                  infoOld.ToStringAddrPort(), nKBucket, nKBucketPos, nUBucket, nUBucketPos);
+        const auto now{Now<NodeSeconds>()};
+        LogInfo("### DEMOTE addr=%s tried_bucket=%d pos=%d new_bucket=%d new_pos=%d last_success_age_s=%d last_try_age_s=%d attempts=%d collateral=%s\n",
+                 infoOld.ToStringAddrPort(), nKBucket, nKBucketPos, nUBucket, nUBucketPos,
+                 count_seconds(now - infoOld.m_last_success), count_seconds(now - infoOld.m_last_try),
+                 infoOld.nAttempts, collateral);
     }
     assert(vvTried[nKBucket][nKBucketPos] == -1);
 
@@ -615,7 +624,10 @@ bool AddrManImpl::Good_(const CService& addr, bool test_before_evict, NodeSecond
     AddrInfo* pinfo = Find(addr, &nId);
 
     // if not found, bail out
-    if (!pinfo) return false;
+    if (!pinfo) {
+        LogInfo("### GOOD addr=%s outcome=not_found\n", addr.ToStringAddrPort());
+        return false;
+    }
 
     AddrInfo& info = *pinfo;
 
@@ -627,10 +639,16 @@ bool AddrManImpl::Good_(const CService& addr, bool test_before_evict, NodeSecond
     // currently-connected peers.
 
     // if it is already in the tried set, don't do anything else
-    if (info.fInTried) return false;
+    if (info.fInTried) {
+        LogInfo("### GOOD addr=%s outcome=already_tried\n", addr.ToStringAddrPort());
+        return false;
+    }
 
     // if it is not in new, something bad happened
-    if (!Assume(info.nRefCount > 0)) return false;
+    if (!Assume(info.nRefCount > 0)) {
+        LogInfo("### GOOD addr=%s outcome=not_in_new\n", addr.ToStringAddrPort());
+        return false;
+    }
 
 
     // which tried bucket to move the entry to
@@ -639,7 +657,8 @@ bool AddrManImpl::Good_(const CService& addr, bool test_before_evict, NodeSecond
 
     // Will moving this address into tried evict another entry?
     if (test_before_evict && (vvTried[tried_bucket][tried_bucket_pos] != -1)) {
-        if (m_tried_collisions.size() < ADDRMAN_SET_TRIED_COLLISION_SIZE) {
+        const bool deferred{m_tried_collisions.size() < ADDRMAN_SET_TRIED_COLLISION_SIZE};
+        if (deferred) {
             m_tried_collisions.insert(nId);
         }
         // Output the entry we'd be colliding with, for debugging purposes
@@ -648,13 +667,24 @@ bool AddrManImpl::Good_(const CService& addr, bool test_before_evict, NodeSecond
                  colliding_entry != mapInfo.end() ? colliding_entry->second.ToStringAddrPort() : "<unknown-addr>",
                  addr.ToStringAddrPort(),
                  m_tried_collisions.size());
+        LogInfo("### GOOD addr=%s outcome=%s colliding_with=%s set_size=%d\n",
+                 addr.ToStringAddrPort(),
+                 deferred ? "collision_deferred" : "collision_dropped_set_full",
+                 colliding_entry != mapInfo.end() ? colliding_entry->second.ToStringAddrPort() : "<unknown-addr>",
+                 m_tried_collisions.size());
         return false;
     } else {
+        const bool evicted_incumbent{vvTried[tried_bucket][tried_bucket_pos] != -1};
         // move nId to the tried tables
         MakeTried(info, nId);
         const auto mapped_as{m_netgroupman.GetMappedAS(addr)};
         LogDebug(BCLog::ADDRMAN, "Moved %s%s to tried[%i][%i]\n",
                  addr.ToStringAddrPort(), (mapped_as ? strprintf(" mapped to AS%i", mapped_as) : ""), tried_bucket, tried_bucket_pos);
+        LogInfo("### GOOD addr=%s outcome=promoted via=%s evicted_incumbent=%d tried_bucket=%d pos=%d\n",
+                 addr.ToStringAddrPort(),
+                 test_before_evict ? "empty_slot" : "forced_eviction",
+                 evicted_incumbent,
+                 tried_bucket, tried_bucket_pos);
         return true;
     }
 }
@@ -685,9 +715,15 @@ void AddrManImpl::Attempt_(const CService& addr, bool fCountFailure, NodeSeconds
 
     // update info
     info.m_last_try = time;
+    bool counted{false};
     if (fCountFailure && info.m_last_count_attempt < m_last_good) {
         info.m_last_count_attempt = time;
         info.nAttempts++;
+        counted = true;
+    }
+    if (info.fInTried) {
+        LogInfo("### ATTEMPT_TRIED addr=%s counted_failure=%d attempts=%d\n",
+                 addr.ToStringAddrPort(), counted, info.nAttempts);
     }
 }
 
@@ -894,6 +930,8 @@ void AddrManImpl::ResolveCollisions_()
 {
     AssertLockHeld(cs);
 
+    const size_t size_before{m_tried_collisions.size()};
+
     for (std::set<nid_type>::iterator it = m_tried_collisions.begin(); it != m_tried_collisions.end();) {
         nid_type id_new = *it;
 
@@ -902,6 +940,7 @@ void AddrManImpl::ResolveCollisions_()
         // If id_new not found in mapInfo remove it from m_tried_collisions
         if (!mapInfo.contains(id_new)) {
             erase_collision = true;
+            LogInfo("### RESOLVE new_id=%d outcome=erased_stale\n", id_new);
         } else {
             AddrInfo& info_new = mapInfo[id_new];
 
@@ -910,10 +949,10 @@ void AddrManImpl::ResolveCollisions_()
             int tried_bucket_pos = info_new.GetBucketPosition(nKey, false, tried_bucket);
             if (!info_new.IsValid()) { // id_new may no longer map to a valid address
                 erase_collision = true;
-            } else {
+                LogInfo("### RESOLVE new=%s outcome=erased_invalid\n", info_new.ToStringAddrPort());
+            } else if (vvTried[tried_bucket][tried_bucket_pos] != -1) {
                 // A pending tried collision implies that the destination tried slot
                 // remains occupied until we resolve it.
-                Assume(vvTried[tried_bucket][tried_bucket_pos] != -1);
 
                 // Get the to-be-evicted address that is being tested
                 nid_type id_old = vvTried[tried_bucket][tried_bucket_pos];
@@ -924,24 +963,49 @@ void AddrManImpl::ResolveCollisions_()
                 // Has successfully connected in last X hours
                 if (current_time - info_old.m_last_success < ADDRMAN_REPLACEMENT) {
                     erase_collision = true;
+                    LogInfo("### RESOLVE new=%s old=%s outcome=defended old_success_age_s=%d\n",
+                             info_new.ToStringAddrPort(), info_old.ToStringAddrPort(),
+                             count_seconds(current_time - info_old.m_last_success));
                 } else if (current_time - info_old.m_last_try < ADDRMAN_REPLACEMENT) { // attempted to connect and failed in last X hours
 
                     // Give address at least 60 seconds to successfully connect
                     if (current_time - info_old.m_last_try > 60s) {
                         LogDebug(BCLog::ADDRMAN, "Replacing %s with %s in tried table\n", info_old.ToStringAddrPort(), info_new.ToStringAddrPort());
+                        LogInfo("### RESOLVE new=%s old=%s outcome=swapped_failed_test old_try_age_s=%d\n",
+                                 info_new.ToStringAddrPort(), info_old.ToStringAddrPort(),
+                                 count_seconds(current_time - info_old.m_last_try));
 
                         // Replaces an existing address already in the tried table with the new address
                         Good_(info_new, false, current_time);
                         erase_collision = true;
+                    } else {
+                        LogInfo("### RESOLVE new=%s old=%s outcome=pending_grace old_try_age_s=%d\n",
+                                 info_new.ToStringAddrPort(), info_old.ToStringAddrPort(),
+                                 count_seconds(current_time - info_old.m_last_try));
                     }
                 } else if (current_time - info_new.m_last_success > ADDRMAN_TEST_WINDOW) {
                     // If the collision hasn't resolved in some reasonable amount of time,
                     // just evict the old entry -- we must not be able to
                     // connect to it for some reason.
                     LogDebug(BCLog::ADDRMAN, "Unable to test; replacing %s with %s in tried table anyway\n", info_old.ToStringAddrPort(), info_new.ToStringAddrPort());
+                    LogInfo("### RESOLVE new=%s old=%s outcome=swapped_timeout collision_age_s=%d\n",
+                             info_new.ToStringAddrPort(), info_old.ToStringAddrPort(),
+                             count_seconds(current_time - info_new.m_last_success));
                     Good_(info_new, false, current_time);
                     erase_collision = true;
+                } else {
+                    LogInfo("### RESOLVE new=%s old=%s outcome=pending_untested collision_age_s=%d\n",
+                             info_new.ToStringAddrPort(), info_old.ToStringAddrPort(),
+                             count_seconds(current_time - info_new.m_last_success));
                 }
+            } else { // Collision is not actually a collision anymore
+                LogInfo("### RESOLVE new=%s outcome=promoted_slot_freed tried_bucket=%d pos=%d new_ref_count=%d new_in_tried=%d collision_age_s=%d\n",
+                         info_new.ToStringAddrPort(), tried_bucket, tried_bucket_pos,
+                         info_new.nRefCount, info_new.fInTried,
+                         count_seconds(Now<NodeSeconds>() - info_new.m_last_success));
+                Good_(info_new, false, Now<NodeSeconds>());
+                erase_collision = true;
+                assert(false);
             }
         }
 
@@ -950,6 +1014,11 @@ void AddrManImpl::ResolveCollisions_()
         } else {
             it++;
         }
+    }
+
+    if (size_before > 0) {
+        LogInfo("### RESOLVE_SUMMARY size_before=%d size_after=%d\n",
+                 size_before, m_tried_collisions.size());
     }
 }
 
@@ -979,6 +1048,10 @@ std::pair<CAddress, NodeSeconds> AddrManImpl::SelectTriedCollision_()
 
     Assume(vvTried[tried_bucket][tried_bucket_pos] != -1);
     const AddrInfo& info_old = mapInfo[vvTried[tried_bucket][tried_bucket_pos]];
+    const auto now{Now<NodeSeconds>()};
+    LogInfo("### FEELER_PICK old=%s challenger=%s old_last_try_age_s=%d old_last_success_age_s=%d\n",
+             info_old.ToStringAddrPort(), newInfo.ToStringAddrPort(),
+             count_seconds(now - info_old.m_last_try), count_seconds(now - info_old.m_last_success));
     return {info_old, info_old.m_last_try};
 }
 
