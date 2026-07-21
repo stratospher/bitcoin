@@ -390,6 +390,15 @@ if(BUILD_UTIL)
     bitcoin_util
   )
   install_binary_component(bitcoin-util HAS_MANPAGE)
+
+  # Local analysis tool: addrman "new" table slot statistics from a peers.dat.
+  add_executable(bitcoin-addrman-stats bitcoin-addrman-stats.cpp)
+  target_link_libraries(bitcoin-addrman-stats
+    core_interface
+    bitcoin_node
+    bitcoin_common
+    bitcoin_util
+  )
 endif()
 
 
