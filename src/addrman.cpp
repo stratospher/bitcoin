@@ -11,6 +11,7 @@
 #include <hash.h>
 #include <logging/timer.h>
 #include <netaddress.h>
+#include <netbase.h>
 #include <netgroup.h>
 #include <protocol.h>
 #include <random.h>
@@ -612,6 +613,12 @@ bool AddrManImpl::Good_(const CService& addr, bool test_before_evict, NodeSecond
 
     m_last_good = time;
 
+    // INSTRUMENTATION: which network's success is refreshing the single global
+    // m_last_good. A steady stream of these on one network (e.g. IPV4) is what
+    // keeps the Attempt_ guard "true" for failing addresses on other networks.
+    LogInfo("###@@@ GOOD net=%s addr=%s -> m_last_good refreshed\n",
+             GetNetworkName(addr.GetNetwork()), addr.ToStringAddrPort());
+
     AddrInfo* pinfo = Find(addr, &nId);
 
     // if not found, bail out
@@ -685,10 +692,29 @@ void AddrManImpl::Attempt_(const CService& addr, bool fCountFailure, NodeSeconds
 
     // update info
     info.m_last_try = time;
-    if (fCountFailure && info.m_last_count_attempt < m_last_good) {
+    const bool counted{fCountFailure && info.m_last_count_attempt < m_last_good};
+    if (counted) {
         info.m_last_count_attempt = time;
         info.nAttempts++;
     }
+
+    // INSTRUMENTATION: observe the m_last_good failure-counting guard, nAttempts
+    // climbing, and the two failure-based IsTerrible thresholds being crossed.
+    // Note: IsTerrible() itself would report false here because we just set
+    // m_last_try=time (it never removes things tried in the last minute), so we
+    // evaluate the failure predicates directly instead.
+    const bool fail_terrible{info.nAttempts >= ADDRMAN_MAX_FAILURES &&
+                             time - info.m_last_success > ADDRMAN_MIN_FAIL};
+    const bool retry_terrible{TicksSinceEpoch<std::chrono::seconds>(info.m_last_success) == 0 &&
+                              info.nAttempts >= ADDRMAN_RETRIES};
+    LogInfo("###@@@ ATTEMPT %s net=%s fail=%d counted=%d nAttempts=%d/%d "
+             "since_good=%ds since_success=%ds fail_terrible=%d retry_terrible=%d\n",
+             addr.ToStringAddrPort(),
+             GetNetworkName(info.GetNetwork()),
+             fCountFailure, counted, info.nAttempts, ADDRMAN_MAX_FAILURES,
+             Ticks<std::chrono::seconds>(time - m_last_good),
+             Ticks<std::chrono::seconds>(time - info.m_last_success),
+             fail_terrible, retry_terrible);
 }
 
 std::pair<CAddress, NodeSeconds> AddrManImpl::Select_(bool new_only, const std::unordered_set<Network>& networks) const
