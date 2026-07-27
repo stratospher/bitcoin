@@ -14,6 +14,7 @@
 #include <util/log.h>
 #include <util/time.h>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -107,7 +108,7 @@ public:
 class AddrManImpl
 {
 public:
-    AddrManImpl(const NetGroupManager& netgroupman, bool deterministic, int32_t consistency_check_ratio);
+    AddrManImpl(const NetGroupManager& netgroupman, bool deterministic, int32_t consistency_check_ratio, bool use_per_network_last_good);
 
     ~AddrManImpl();
 
@@ -140,6 +141,10 @@ public:
 
     std::vector<std::pair<AddrInfo, AddressPosition>> GetEntries(bool from_tried) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs);
+
+    //! Snapshot of the (memory-only) per-network last-good timestamps. In global
+    //! mode only slot 0 (NET_UNROUTABLE) is meaningful. Used for experiment snapshots.
+    std::array<NodeSeconds, NET_MAX> GetLastGood() const EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
     void Connected(const CService& addr, NodeSeconds time)
         EXCLUSIVE_LOCKS_REQUIRED(!cs);
@@ -211,8 +216,15 @@ private:
     //! list of "new" buckets
     nid_type vvNew[ADDRMAN_NEW_BUCKET_COUNT][ADDRMAN_BUCKET_SIZE] GUARDED_BY(cs);
 
-    //! last time Good was called (memory only). Initially set to 1 so that "never" is strictly worse.
-    NodeSeconds m_last_good GUARDED_BY(cs){1s};
+    //! last time Good was called (memory only), indexed by Network. When
+    //! m_use_per_network_last_good is false (real/master addrman) only slot 0
+    //! (NET_UNROUTABLE) is used, as a single global value initialized to 1s so
+    //! that "never" is strictly worse. When true (shadow addrman, PR #35750)
+    //! each network is tracked independently, all starting at 0s.
+    std::array<NodeSeconds, NET_MAX> m_last_good GUARDED_BY(cs){};
+
+    //! Whether m_last_good is tracked per network (shadow) or globally (real).
+    const bool m_use_per_network_last_good;
 
     //! Holds addrs inserted into tried table that collide with existing entries. Test-before-evict discipline used to resolve these collisions.
     std::set<nid_type> m_tried_collisions;

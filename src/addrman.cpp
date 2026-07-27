@@ -88,9 +88,10 @@ double AddrInfo::GetChance(NodeSeconds now) const
     return fChance;
 }
 
-AddrManImpl::AddrManImpl(const NetGroupManager& netgroupman, bool deterministic, int32_t consistency_check_ratio)
+AddrManImpl::AddrManImpl(const NetGroupManager& netgroupman, bool deterministic, int32_t consistency_check_ratio, bool use_per_network_last_good)
     : insecure_rand{deterministic}
     , nKey{deterministic ? uint256{1} : insecure_rand.rand256()}
+    , m_use_per_network_last_good{use_per_network_last_good}
     , m_consistency_check_ratio{consistency_check_ratio}
     , m_netgroupman{netgroupman}
 {
@@ -103,6 +104,12 @@ AddrManImpl::AddrManImpl(const NetGroupManager& netgroupman, bool deterministic,
         for (auto& entry : bucket) {
             entry = -1;
         }
+    }
+    // In global mode (master behavior), slot 0 is initialized to 1s so that
+    // "never" (a fresh entry's m_last_count_attempt of 0s) is strictly worse.
+    // In per-network mode all slots start at 0s (PR #35750 behavior).
+    if (!m_use_per_network_last_good) {
+        m_last_good[NET_UNROUTABLE] = NodeSeconds{1s};
     }
 }
 
@@ -611,13 +618,18 @@ bool AddrManImpl::Good_(const CService& addr, bool test_before_evict, NodeSecond
 
     nid_type nId;
 
-    m_last_good = time;
+    // When m_use_per_network_last_good is set (shadow addrman), m_last_good is
+    // tracked per network; otherwise slot 0 (NET_UNROUTABLE) is used as a single
+    // global value, reproducing master behavior. See the member declaration.
+    const size_t good_idx{m_use_per_network_last_good ? static_cast<size_t>(addr.GetNetwork()) : static_cast<size_t>(NET_UNROUTABLE)};
+    m_last_good[good_idx] = time;
 
-    // INSTRUMENTATION: which network's success is refreshing the single global
-    // m_last_good. A steady stream of these on one network (e.g. IPV4) is what
-    // keeps the Attempt_ guard "true" for failing addresses on other networks.
-    LogInfo("###@@@ GOOD net=%s addr=%s -> m_last_good refreshed\n",
-             GetNetworkName(addr.GetNetwork()), addr.ToStringAddrPort());
+    // INSTRUMENTATION (real addrman only, to keep debug.log a single stream):
+    // which network's success is refreshing m_last_good.
+    if (!m_use_per_network_last_good) {
+        LogInfo("###@@@ GOOD net=%s addr=%s -> m_last_good refreshed\n",
+                GetNetworkName(addr.GetNetwork()), addr.ToStringAddrPort());
+    }
 
     AddrInfo* pinfo = Find(addr, &nId);
 
@@ -692,29 +704,32 @@ void AddrManImpl::Attempt_(const CService& addr, bool fCountFailure, NodeSeconds
 
     // update info
     info.m_last_try = time;
-    const bool counted{fCountFailure && info.m_last_count_attempt < m_last_good};
+    const size_t good_idx{m_use_per_network_last_good ? static_cast<size_t>(info.GetNetwork()) : static_cast<size_t>(NET_UNROUTABLE)};
+    const bool counted{fCountFailure && info.m_last_count_attempt < m_last_good[good_idx]};
     if (counted) {
         info.m_last_count_attempt = time;
         info.nAttempts++;
     }
 
-    // INSTRUMENTATION: observe the m_last_good failure-counting guard, nAttempts
-    // climbing, and the two failure-based IsTerrible thresholds being crossed.
-    // Note: IsTerrible() itself would report false here because we just set
-    // m_last_try=time (it never removes things tried in the last minute), so we
-    // evaluate the failure predicates directly instead.
-    const bool fail_terrible{info.nAttempts >= ADDRMAN_MAX_FAILURES &&
-                             time - info.m_last_success > ADDRMAN_MIN_FAIL};
-    const bool retry_terrible{TicksSinceEpoch<std::chrono::seconds>(info.m_last_success) == 0 &&
-                              info.nAttempts >= ADDRMAN_RETRIES};
-    LogInfo("###@@@ ATTEMPT %s net=%s fail=%d counted=%d nAttempts=%d/%d "
-             "since_good=%ds since_success=%ds fail_terrible=%d retry_terrible=%d\n",
-             addr.ToStringAddrPort(),
-             GetNetworkName(info.GetNetwork()),
-             fCountFailure, counted, info.nAttempts, ADDRMAN_MAX_FAILURES,
-             Ticks<std::chrono::seconds>(time - m_last_good),
-             Ticks<std::chrono::seconds>(time - info.m_last_success),
-             fail_terrible, retry_terrible);
+    // INSTRUMENTATION (real addrman only, to keep debug.log a single stream):
+    // observe the m_last_good failure-counting guard, nAttempts climbing, and the
+    // two failure-based IsTerrible thresholds being crossed. Note: IsTerrible()
+    // itself would report false here because we just set m_last_try=time (it never
+    // removes things tried in the last minute), so we evaluate the predicates directly.
+    if (!m_use_per_network_last_good) {
+        const bool fail_terrible{info.nAttempts >= ADDRMAN_MAX_FAILURES &&
+                                 time - info.m_last_success > ADDRMAN_MIN_FAIL};
+        const bool retry_terrible{TicksSinceEpoch<std::chrono::seconds>(info.m_last_success) == 0 &&
+                                  info.nAttempts >= ADDRMAN_RETRIES};
+        LogInfo("###@@@ ATTEMPT %s net=%s fail=%d counted=%d nAttempts=%d/%d "
+                "since_good=%ds since_success=%ds fail_terrible=%d retry_terrible=%d\n",
+                addr.ToStringAddrPort(),
+                GetNetworkName(info.GetNetwork()),
+                fCountFailure, counted, info.nAttempts, ADDRMAN_MAX_FAILURES,
+                Ticks<std::chrono::seconds>(time - m_last_good[good_idx]),
+                Ticks<std::chrono::seconds>(time - info.m_last_success),
+                fail_terrible, retry_terrible);
+    }
 }
 
 std::pair<CAddress, NodeSeconds> AddrManImpl::Select_(bool new_only, const std::unordered_set<Network>& networks) const
@@ -1251,6 +1266,12 @@ std::vector<std::pair<AddrInfo, AddressPosition>> AddrManImpl::GetEntries(bool f
     return addrInfos;
 }
 
+std::array<NodeSeconds, NET_MAX> AddrManImpl::GetLastGood() const
+{
+    LOCK(cs);
+    return m_last_good;
+}
+
 void AddrManImpl::Connected(const CService& addr, NodeSeconds time)
 {
     LOCK(cs);
@@ -1277,9 +1298,22 @@ std::optional<AddressPosition> AddrManImpl::FindAddressEntry(const CAddress& add
 }
 
 AddrMan::AddrMan(const NetGroupManager& netgroupman, bool deterministic, int32_t consistency_check_ratio)
-    : m_impl(std::make_unique<AddrManImpl>(netgroupman, deterministic, consistency_check_ratio)) {}
+    : m_impl(std::make_unique<AddrManImpl>(netgroupman, deterministic, consistency_check_ratio, /*use_per_network_last_good=*/false)),
+      m_shadow(std::make_unique<AddrManImpl>(netgroupman, deterministic, /*consistency_check_ratio=*/0, /*use_per_network_last_good=*/true))
+{
+    // Ensure the shadow starts from the same nKey and (empty) state as m_impl,
+    // so bucket placement is identical even on a fresh start with no peers.dat.
+    SyncShadow();
+}
 
 AddrMan::~AddrMan() = default;
+
+void AddrMan::SyncShadow()
+{
+    DataStream ss;
+    m_impl->Serialize(ss);
+    m_shadow->Unserialize(ss);
+}
 
 template <typename Stream>
 void AddrMan::Serialize(Stream& s_) const
@@ -1291,6 +1325,8 @@ template <typename Stream>
 void AddrMan::Unserialize(Stream& s_)
 {
     m_impl->Unserialize<Stream>(s_);
+    // Mirror the freshly-loaded state into the shadow so both begin identical.
+    SyncShadow();
 }
 
 // explicit instantiation
@@ -1308,26 +1344,33 @@ size_t AddrMan::Size(std::optional<Network> net, std::optional<bool> in_new) con
 
 bool AddrMan::Add(const std::vector<CAddress>& vAddr, const CNetAddr& source, std::chrono::seconds time_penalty)
 {
+    m_shadow->Add(vAddr, source, time_penalty);
     return m_impl->Add(vAddr, source, time_penalty);
 }
 
 bool AddrMan::Good(const CService& addr, NodeSeconds time)
 {
+    m_shadow->Good(addr, time);
     return m_impl->Good(addr, time);
 }
 
 void AddrMan::Attempt(const CService& addr, bool fCountFailure, NodeSeconds time)
 {
+    m_shadow->Attempt(addr, fCountFailure, time);
     m_impl->Attempt(addr, fCountFailure, time);
 }
 
 void AddrMan::ResolveCollisions()
 {
+    m_shadow->ResolveCollisions();
     m_impl->ResolveCollisions();
 }
 
 std::pair<CAddress, NodeSeconds> AddrMan::SelectTriedCollision()
 {
+    // Mirror the (mutating) collision-set cleanup to the shadow; its return
+    // value is unused because only m_impl drives real connections.
+    m_shadow->SelectTriedCollision();
     return m_impl->SelectTriedCollision();
 }
 
@@ -1341,18 +1384,25 @@ std::vector<CAddress> AddrMan::GetAddr(size_t max_addresses, size_t max_pct, std
     return m_impl->GetAddr(max_addresses, max_pct, network, filtered);
 }
 
-std::vector<std::pair<AddrInfo, AddressPosition>> AddrMan::GetEntries(bool use_tried) const
+std::vector<std::pair<AddrInfo, AddressPosition>> AddrMan::GetEntries(bool use_tried, bool shadow) const
 {
-    return m_impl->GetEntries(use_tried);
+    return (shadow ? m_shadow : m_impl)->GetEntries(use_tried);
+}
+
+std::array<NodeSeconds, NET_MAX> AddrMan::GetLastGood(bool shadow) const
+{
+    return (shadow ? m_shadow : m_impl)->GetLastGood();
 }
 
 void AddrMan::Connected(const CService& addr, NodeSeconds time)
 {
+    m_shadow->Connected(addr, time);
     m_impl->Connected(addr, time);
 }
 
 void AddrMan::SetServices(const CService& addr, ServiceFlags nServices)
 {
+    m_shadow->SetServices(addr, nServices);
     m_impl->SetServices(addr, nServices);
 }
 

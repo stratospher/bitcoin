@@ -10,6 +10,7 @@
 #include <protocol.h>
 #include <util/time.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
@@ -115,6 +116,17 @@ class AddrMan
 protected:
     const std::unique_ptr<AddrManImpl> m_impl;
 
+    //! Experiment-only shadow addrman: mirrors every mutating operation applied
+    //! to m_impl, but uses the per-network m_last_good behavior (PR #35750). It
+    //! is passive (never drives connections); reads go only to m_impl. Snapshots
+    //! of both are exposed via getrawaddrman for offline comparison.
+    const std::unique_ptr<AddrManImpl> m_shadow;
+
+    //! Copy m_impl's serialized state (nKey + entries) into m_shadow so both
+    //! start identical. Memory-only fields (m_last_good, m_last_try,
+    //! m_last_count_attempt) are not serialized and keep each impl's own defaults.
+    void SyncShadow();
+
 public:
     explicit AddrMan(const NetGroupManager& netgroupman, bool deterministic, int32_t consistency_check_ratio);
 
@@ -205,10 +217,16 @@ public:
      * is returned for each occurrence. Addresses only ever appear once in the tried table.
      *
      * @param[in] from_tried     Selects which table to return entries from.
+     * @param[in] shadow         If true, read from the experiment shadow addrman instead.
      *
      * @return                   A vector consisting of pairs of AddrInfo and AddressPosition.
      */
-    std::vector<std::pair<AddrInfo, AddressPosition>> GetEntries(bool from_tried) const;
+    std::vector<std::pair<AddrInfo, AddressPosition>> GetEntries(bool from_tried, bool shadow = false) const;
+
+    //! Experiment-only: snapshot of per-network last-good timestamps for the real
+    //! (shadow=false) or shadow (shadow=true) addrman. In the real addrman only
+    //! slot 0 (NET_UNROUTABLE) is meaningful; the shadow tracks all networks.
+    std::array<NodeSeconds, NET_MAX> GetLastGood(bool shadow = false) const;
 
     /** We have successfully connected to this peer. Calling this function
      *  updates the CAddress's nTime, which is used in our IsTerrible()

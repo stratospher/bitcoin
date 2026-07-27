@@ -1181,7 +1181,7 @@ static RPCMethod exportasmap()
     };
 }
 
-UniValue AddrmanEntryToJSON(const AddrInfo& info, const CConnman& connman)
+UniValue AddrmanEntryToJSON(const AddrInfo& info, const CConnman& connman, NodeSeconds now)
 {
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("address", info.ToStringAddr());
@@ -1192,6 +1192,14 @@ UniValue AddrmanEntryToJSON(const AddrInfo& info, const CConnman& connman)
     ret.pushKV("port", info.GetPort());
     ret.pushKV("services", static_cast<std::underlying_type_t<decltype(info.nServices)>>(info.nServices));
     ret.pushKV("time", TicksSinceEpoch<std::chrono::seconds>(info.nTime));
+    // Experiment: expose the (memory-only) connection-quality fields plus the
+    // computed IsTerrible() flag so the real and shadow addrmans can be compared
+    // offline. is_terrible is evaluated at the snapshot time reported top-level.
+    ret.pushKV("last_try", TicksSinceEpoch<std::chrono::seconds>(info.m_last_try));
+    ret.pushKV("last_count_attempt", TicksSinceEpoch<std::chrono::seconds>(info.m_last_count_attempt));
+    ret.pushKV("last_success", TicksSinceEpoch<std::chrono::seconds>(info.m_last_success));
+    ret.pushKV("attempts", info.nAttempts);
+    ret.pushKV("is_terrible", info.IsTerrible(now));
     ret.pushKV("network", GetNetworkName(info.GetNetClass()));
     ret.pushKV("source", info.source.ToStringAddr());
     ret.pushKV("source_network", GetNetworkName(info.source.GetNetClass()));
@@ -1202,7 +1210,7 @@ UniValue AddrmanEntryToJSON(const AddrInfo& info, const CConnman& connman)
     return ret;
 }
 
-UniValue AddrmanTableToJSON(const std::vector<std::pair<AddrInfo, AddressPosition>>& tableInfos, const CConnman& connman)
+UniValue AddrmanTableToJSON(const std::vector<std::pair<AddrInfo, AddressPosition>>& tableInfos, const CConnman& connman, NodeSeconds now)
 {
     UniValue table(UniValue::VOBJ);
     for (const auto& e : tableInfos) {
@@ -1213,32 +1221,51 @@ UniValue AddrmanTableToJSON(const std::vector<std::pair<AddrInfo, AddressPositio
         // Address manager tables have unique entries so there is no advantage
         // in using UniValue::pushKV, which checks if the key already exists
         // in O(N). UniValue::pushKVEnd is used instead which currently is O(1).
-        table.pushKVEnd(key.str(), AddrmanEntryToJSON(info, connman));
+        table.pushKVEnd(key.str(), AddrmanEntryToJSON(info, connman, now));
     }
     return table;
 }
 
 static RPCMethod getrawaddrman()
 {
+    // Both the real and shadow (PR #35750) address managers are returned with the
+    // same structure; build it once and reuse for each.
+    const auto bucket_entry = []() -> RPCResult {
+        return {RPCResult::Type::OBJ, "bucket/position", "the location in the address manager table (<bucket>/<position>)", {
+            {RPCResult::Type::STR, "address", "The address of the node"},
+            {RPCResult::Type::NUM, "mapped_as", /*optional=*/true, "Mapped AS (Autonomous System) number at the end of the BGP route to the peer, used for diversifying peer selection (only displayed if the -asmap config option is set)"},
+            {RPCResult::Type::NUM, "port", "The port number of the node"},
+            {RPCResult::Type::NUM_TIME, "last_try", "The " + UNIX_EPOCH_TIME + " of the last connection attempt to the node"},
+            {RPCResult::Type::NUM_TIME, "last_count_attempt", "The " + UNIX_EPOCH_TIME + " of the last attempt counted as a failure"},
+            {RPCResult::Type::NUM_TIME, "last_success", "The " + UNIX_EPOCH_TIME + " of the last successful connection to the node"},
+            {RPCResult::Type::NUM, "attempts", "The number of connection attempts since the last successful connection"},
+            {RPCResult::Type::BOOL, "is_terrible", "Whether the entry is considered Terrible (evaluated at snapshot_time)"},
+            {RPCResult::Type::STR, "network", "The network (" + Join(GetNetworkNames(), ", ") + ") of the address"},
+            {RPCResult::Type::NUM, "services", "The services offered by the node"},
+            {RPCResult::Type::NUM_TIME, "time", "The " + UNIX_EPOCH_TIME + " when the node was last seen"},
+            {RPCResult::Type::STR, "source", "The address that relayed the address to us"},
+            {RPCResult::Type::STR, "source_network", "The network (" + Join(GetNetworkNames(), ", ") + ") of the source address"},
+            {RPCResult::Type::NUM, "source_mapped_as", /*optional=*/true, "Mapped AS (Autonomous System) number at the end of the BGP route to the source, used for diversifying peer selection (only displayed if the -asmap config option is set)"}
+        }};
+    };
+    const auto addrman_result = [&](const std::string& key, const std::string& desc) -> RPCResult {
+        return {RPCResult::Type::OBJ, key, desc, {
+            {RPCResult::Type::OBJ_DYN, "new", "buckets with addresses in the new table", {bucket_entry()}},
+            {RPCResult::Type::OBJ_DYN, "tried", "buckets with addresses in the tried table", {bucket_entry()}},
+            {RPCResult::Type::OBJ_DYN, "last_good", "the last-good timestamp per network", {
+                {RPCResult::Type::NUM_TIME, "network", "The " + UNIX_EPOCH_TIME + " of the last successful connection to that network"}
+            }}
+        }};
+    };
     return RPCMethod{"getrawaddrman",
         "EXPERIMENTAL warning: this call may be changed in future releases.\n"
         "\nReturns information on all address manager entries for the new and tried tables.\n",
         {},
         RPCResult{
-            RPCResult::Type::OBJ_DYN, "", "", {
-                {RPCResult::Type::OBJ_DYN, "table", "buckets with addresses in the address manager table ( new, tried )", {
-                    {RPCResult::Type::OBJ, "bucket/position", "the location in the address manager table (<bucket>/<position>)", {
-                        {RPCResult::Type::STR, "address", "The address of the node"},
-                        {RPCResult::Type::NUM, "mapped_as", /*optional=*/true, "Mapped AS (Autonomous System) number at the end of the BGP route to the peer, used for diversifying peer selection (only displayed if the -asmap config option is set)"},
-                        {RPCResult::Type::NUM, "port", "The port number of the node"},
-                        {RPCResult::Type::STR, "network", "The network (" + Join(GetNetworkNames(), ", ") + ") of the address"},
-                        {RPCResult::Type::NUM, "services", "The services offered by the node"},
-                        {RPCResult::Type::NUM_TIME, "time", "The " + UNIX_EPOCH_TIME + " when the node was last seen"},
-                        {RPCResult::Type::STR, "source", "The address that relayed the address to us"},
-                        {RPCResult::Type::STR, "source_network", "The network (" + Join(GetNetworkNames(), ", ") + ") of the source address"},
-                        {RPCResult::Type::NUM, "source_mapped_as", /*optional=*/true, "Mapped AS (Autonomous System) number at the end of the BGP route to the source, used for diversifying peer selection (only displayed if the -asmap config option is set)"}
-                    }}
-                }}
+            RPCResult::Type::OBJ, "", "", {
+                {RPCResult::Type::NUM_TIME, "snapshot_time", "The " + UNIX_EPOCH_TIME + " at which this snapshot (and all is_terrible flags) was evaluated"},
+                addrman_result("real", "the real address manager (master m_last_good behavior)"),
+                addrman_result("shadow", "the shadow address manager (per-network m_last_good, PR #35750)")
             }
         },
         RPCExamples{
@@ -1250,9 +1277,28 @@ static RPCMethod getrawaddrman()
             NodeContext& node_context = EnsureAnyNodeContext(request.context);
             CConnman& connman = EnsureConnman(node_context);
 
+            // Experiment: dump both the real addrman (master m_last_good behavior)
+            // and the passive shadow addrman (per-network m_last_good, PR #35750),
+            // each with per-network last_good timestamps, for offline comparison.
+            // A single snapshot time is used for all is_terrible evaluations.
+            const auto now{Now<NodeSeconds>()};
+            const auto dump_addrman = [&](bool shadow) {
+                UniValue tables(UniValue::VOBJ);
+                tables.pushKV("new", AddrmanTableToJSON(addrman.GetEntries(false, shadow), connman, now));
+                tables.pushKV("tried", AddrmanTableToJSON(addrman.GetEntries(true, shadow), connman, now));
+                UniValue last_good(UniValue::VOBJ);
+                const auto lg{addrman.GetLastGood(shadow)};
+                for (size_t i = 0; i < lg.size(); ++i) {
+                    last_good.pushKV(GetNetworkName(static_cast<Network>(i)), TicksSinceEpoch<std::chrono::seconds>(lg[i]));
+                }
+                tables.pushKV("last_good", last_good);
+                return tables;
+            };
+
             UniValue ret(UniValue::VOBJ);
-            ret.pushKV("new", AddrmanTableToJSON(addrman.GetEntries(false), connman));
-            ret.pushKV("tried", AddrmanTableToJSON(addrman.GetEntries(true), connman));
+            ret.pushKV("snapshot_time", TicksSinceEpoch<std::chrono::seconds>(now));
+            ret.pushKV("real", dump_addrman(/*shadow=*/false));
+            ret.pushKV("shadow", dump_addrman(/*shadow=*/true));
             return ret;
         },
     };
