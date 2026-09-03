@@ -1599,8 +1599,8 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
         my_height,
         my_tx_relay);
 
-    LogDebug(
-        BCLog::NET, "send version message: version=%d, blocks=%d%s, txrelay=%d, peer=%d\n",
+    LogInfo(
+        "send version message: version=%d, blocks=%d%s, txrelay=%d, peer=%d\n",
         pnode.AdvertisedVersion(), my_height,
         fLogIPs ? strprintf(", them=%s", your_addr.ToStringAddrPort()) : "",
         my_tx_relay, pnode.GetId());
@@ -3722,7 +3722,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         }
 
         const auto mapped_as{m_connman.GetMappedAS(pfrom.addr)};
-        LogDebug(BCLog::NET, "receive version message: %s: version %d, blocks=%d, us=%s, txrelay=%d, %s%s",
+        LogInfo("receive version message: %s: version %d, blocks=%d, us=%s, txrelay=%d, %s%s",
                   cleanSubVer.empty() ? "<no user agent>" : cleanSubVer, pfrom.nVersion,
                   starting_height, addrMe.ToStringAddrPort(), fRelay, pfrom.LogPeer(),
                   (mapped_as ? strprintf(", mapped_as=%d", mapped_as) : ""));
@@ -3838,7 +3838,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         // Feeler connections exist only to verify if address is online.
         if (pfrom.IsFeelerConn()) {
             LogInfo("### feeler connection to %s successful (handshake completed, address online)\n", pfrom.addr.ToStringAddrPort());
-            LogDebug(BCLog::NET, "feeler connection completed, %s", pfrom.DisconnectMsg());
+            LogInfo("feeler connection completed, %s", pfrom.DisconnectMsg());
             pfrom.fDisconnect = true;
         }
         return;
@@ -3865,13 +3865,8 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                 (mapped_as ? strprintf(", mapped_as=%d", mapped_as) : ""));
         };
 
-        // Log successful connections unconditionally for outbound, but not for inbound as those
-        // can be triggered by an attacker at high rate.
-        if (pfrom.IsInboundConn()) {
-            LogDebug(BCLog::NET, "%s", new_peer_msg());
-        } else {
-            LogInfo("%s", new_peer_msg());
-        }
+        // Log successful connections unconditionally, inbound included.
+        LogInfo("%s", new_peer_msg());
 
         if (auto tx_relay = peer.GetTxRelay()) {
             // `TxRelay::m_tx_inventory_to_send` must be empty before the
@@ -4903,7 +4898,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         // Making nodes which are behind NAT and can only make outgoing connections ignore
         // the getaddr message mitigates the attack.
         if (!pfrom.IsInboundConn()) {
-            LogDebug(BCLog::NET, "Ignoring \"getaddr\" from %s connection. peer=%d\n", pfrom.ConnectionTypeAsString(), pfrom.GetId());
+            LogInfo("Ignoring \"getaddr\" from %s connection. peer=%d\n", pfrom.ConnectionTypeAsString(), pfrom.GetId());
             return;
         }
 
@@ -4914,7 +4909,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         // Only send one GetAddr response per connection to reduce resource waste
         // and discourage addr stamping of INV announcements.
         if (peer.m_getaddr_recvd) {
-            LogDebug(BCLog::NET, "Ignoring repeated \"getaddr\". peer=%d\n", pfrom.GetId());
+            LogInfo("Ignoring repeated \"getaddr\". peer=%d\n", pfrom.GetId());
             return;
         }
         peer.m_getaddr_recvd = true;
@@ -5716,7 +5711,7 @@ void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer
     AssertLockHeld(g_msgproc_mutex);
 
     if (!SetupAddressRelay(pfrom, peer)) {
-        LogDebug(BCLog::NET, "ignoring %s message from %s peer=%d\n", msg_type, pfrom.ConnectionTypeAsString(), pfrom.GetId());
+        LogInfo("ignoring %s message from %s peer=%d\n", msg_type, pfrom.ConnectionTypeAsString(), pfrom.GetId());
         return;
     }
 
@@ -5808,7 +5803,7 @@ void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer
 
     // AddrFetch: Require multiple addresses to avoid disconnecting on self-announcements
     if (pfrom.IsAddrFetchConn() && vAddr.size() > 1) {
-        LogDebug(BCLog::NET, "addrfetch connection completed, %s", pfrom.DisconnectMsg());
+        LogInfo("addrfetch connection completed, %s", pfrom.DisconnectMsg());
         pfrom.fDisconnect = true;
     }
 }
@@ -5853,7 +5848,7 @@ bool PeerManagerImpl::SendMessages(CNode& node)
     }
 
     if (node.IsAddrFetchConn() && now - node.m_connected > 10 * AVG_ADDRESS_BROADCAST_INTERVAL) {
-        LogDebug(BCLog::NET, "addrfetch connection timeout, %s", node.DisconnectMsg());
+        LogInfo("addrfetch connection timeout, %s", node.DisconnectMsg());
         node.fDisconnect = true;
         return true;
     }
