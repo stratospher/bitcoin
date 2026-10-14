@@ -2348,6 +2348,7 @@ void CConnman::ThreadDNSAddressSeed()
         //   DNS seeds, and if that fails too, also try the fixed seeds.
         //   (done in ThreadOpenConnections)
         int found = 0;
+        const bool seeds_to_tried{gArgs.GetBoolArg("-dnsseedtotried", false)};
         const std::chrono::seconds seeds_wait_time = (addrman.get().Size() >= DNSSEEDS_DELAY_PEER_THRESHOLD ? DNSSEEDS_DELAY_MANY_PEERS : DNSSEEDS_DELAY_FEW_PEERS);
 
         for (const std::string& seed : seeds) {
@@ -2416,6 +2417,10 @@ void CConnman::ThreadDNSAddressSeed()
                     }
                     addrman.get().Add(vAdd, resolveSource);
                     for (const CAddress& addr : vAdd) {
+                        // Pass a time far in the past so the entry doesn't look recently tried, which
+                        // ThreadOpenConnections and GetChance penalize. 1s is also m_last_good's initial
+                        // value, so failure counting in Attempt() is unaffected.
+                        if (seeds_to_tried) addrman.get().Good(addr, NodeSeconds{1s});
                         const auto pos{addrman.get().FindAddressEntry(addr)};
                         LogInfo("### dnsseed %s seed=%s table=%s\n", addr.ToStringAddrPort(), seed, pos ? (pos->tried ? "tried" : "new") : "none");
                     }
