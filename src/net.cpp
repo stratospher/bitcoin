@@ -2415,6 +2415,10 @@ void CConnman::ThreadDNSAddressSeed()
                         found++;
                     }
                     addrman.get().Add(vAdd, resolveSource);
+                    for (const CAddress& addr : vAdd) {
+                        const auto pos{addrman.get().FindAddressEntry(addr)};
+                        LogInfo("### dnsseed %s seed=%s table=%s\n", addr.ToStringAddrPort(), seed, pos ? (pos->tried ? "tried" : "new") : "none");
+                    }
                 } else {
                     // If the seed does not support a subdomain with our desired service bits,
                     // we make an ADDR_FETCH connection to the DNS resolved peer address for the
@@ -2969,6 +2973,11 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect, std
             }
 
             if (preferred_net != std::nullopt) LogDebug(BCLog::NET, "Making network specific connection to %s on %s.\n", addrConnect.ToStringAddrPort(), GetNetworkName(preferred_net.value()));
+
+            const auto pos{addrman.get().FindAddressEntry(addrConnect)};
+            LogInfo("### attempt %s conn=%s table=%s new=%d tried=%d\n", addrConnect.ToStringAddrPort(), ConnectionTypeAsString(conn_type),
+                    pos ? (pos->tried ? "tried" : "new") : "none",
+                    addrman.get().Size(std::nullopt, /*in_new=*/true), addrman.get().Size(std::nullopt, /*in_new=*/false));
 
             // Record addrman failure attempts when node has at least 2 persistent outbound connections to peers with
             // different netgroups in ipv4/ipv6 networks + all peers in Tor/I2P/CJDNS networks.
