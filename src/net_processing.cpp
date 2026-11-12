@@ -5783,7 +5783,11 @@ void PeerManagerImpl::MaybeSendAddr(CNode& node, Peer& peer, std::chrono::micros
         }
         if (std::optional<CService> local_service = GetLocalAddrForPeer(node)) {
             CAddress local_addr{*local_service, peer.m_our_services, Now<NodeSeconds>()};
-            if (peer.m_next_local_addr_send == 0us) {
+            if (IsMarkerAddr(local_addr)) {
+                // Experiment: a peer can report a marker as our address (addrMe), and the
+                // first self-announcement below bypasses m_addrs_to_send and the guard.
+                LogInfo("%s kind=self addr=%s to=peer=%d %s", MARKER_LEAK_TAG, local_addr.ToStringAddrPort(), peer.m_id, peer.m_marker_desc);
+            } else if (peer.m_next_local_addr_send == 0us) {
                 // Send the initial self-announcement in its own message. This makes sure
                 // rate-limiting with limited start-tokens doesn't ignore it if the first
                 // message ends up containing multiple addresses.
