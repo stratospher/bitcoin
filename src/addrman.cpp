@@ -10,6 +10,7 @@
 
 #include <hash.h>
 #include <logging/timer.h>
+#include <marker_experiment.h>
 #include <netaddress.h>
 #include <netgroup.h>
 #include <protocol.h>
@@ -463,6 +464,10 @@ void AddrManImpl::ClearNew(int nUBucket, int nUBucketPos)
         infoDelete.nRefCount--;
         vvNew[nUBucket][nUBucketPos] = -1;
         LogDebug(BCLog::ADDRMAN, "Removed %s from new[%i][%i]\n", infoDelete.ToStringAddrPort(), nUBucket, nUBucketPos);
+        if (IsMarkerAddr(infoDelete)) {
+            LogInfo("%s addrman-removed addr=%s bucket=%d pos=%d refcount_left=%d terrible=%d attempts=%d",
+                    MARKER_TAG, infoDelete.ToStringAddrPort(), nUBucket, nUBucketPos, infoDelete.nRefCount, infoDelete.IsTerrible(), infoDelete.nAttempts);
+        }
         if (infoDelete.nRefCount == 0) {
             Delete(nIdDelete);
         }
@@ -543,6 +548,12 @@ bool AddrManImpl::AddSingle(const CAddress& addr, const CNetAddr& source, std::c
         time_penalty = 0s;
     }
 
+    const bool marker{IsMarkerAddr(addr)};
+    if (marker && pinfo) {
+        LogInfo("%s addrman addr=%s src=%s existing=1 in_tried=%d refcount=%d stored_ntime=%d",
+                MARKER_TAG, addr.ToStringAddrPort(), source.ToStringAddr(), pinfo->fInTried, pinfo->nRefCount, TicksSinceEpoch<std::chrono::seconds>(pinfo->nTime));
+    }
+
     if (pinfo) {
         // periodically update nTime
         const bool currently_online{NodeClock::now() - addr.nTime < 24h};
@@ -580,12 +591,20 @@ bool AddrManImpl::AddSingle(const CAddress& addr, const CNetAddr& source, std::c
     int nUBucket = pinfo->GetNewBucket(nKey, source, m_netgroupman);
     int nUBucketPos = pinfo->GetBucketPosition(nKey, true, nUBucket);
     bool fInsert = vvNew[nUBucket][nUBucketPos] == -1;
+    // Experiment: capture before pinfo may be deleted below.
+    std::string marker_slot{fInsert ? "empty" : "self"};
+    const int marker_refcount{pinfo->nRefCount};
+    const NodeSeconds marker_ntime{pinfo->nTime};
     if (vvNew[nUBucket][nUBucketPos] != nId) {
         if (!fInsert) {
             AddrInfo& infoExisting = mapInfo[vvNew[nUBucket][nUBucketPos]];
             if (infoExisting.IsTerrible() || (infoExisting.nRefCount > 1 && pinfo->nRefCount == 0)) {
                 // Overwrite the existing new table entry.
                 fInsert = true;
+            }
+            if (marker) {
+                marker_slot = strprintf("%s:%s(terrible=%d,refcount=%d,marker=%d)", fInsert ? "evicted" : "kept", infoExisting.ToStringAddrPort(),
+                                        infoExisting.IsTerrible(), infoExisting.nRefCount, IsMarkerAddr(infoExisting));
             }
         }
         if (fInsert) {
@@ -600,6 +619,11 @@ bool AddrManImpl::AddSingle(const CAddress& addr, const CNetAddr& source, std::c
                 Delete(nId);
             }
         }
+    }
+    if (marker) {
+        LogInfo("%s addrman addr=%s src=%s bucket=%d pos=%d slot=%s inserted=%d refcount=%d stored_ntime=%d",
+                MARKER_TAG, addr.ToStringAddrPort(), source.ToStringAddr(), nUBucket, nUBucketPos, marker_slot, fInsert,
+                marker_refcount + (fInsert ? 1 : 0), TicksSinceEpoch<std::chrono::seconds>(marker_ntime));
     }
     return fInsert;
 }
