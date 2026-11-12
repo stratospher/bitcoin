@@ -5818,6 +5818,14 @@ void PeerManagerImpl::MaybeSendAddr(CNode& node, Peer& peer, std::chrono::micros
         peer.m_addrs_to_send.resize(MAX_ADDR_TO_SEND);
     }
 
+    // Experiment: last line of defence, this is the only place addr messages are
+    // built from m_addrs_to_send. Should never fire, since all callers filter.
+    std::erase_if(peer.m_addrs_to_send, [&peer](const CAddress& addr) {
+        if (!IsMarkerAddr(addr) || peer.m_marker_allowed) return false;
+        LogInfo("%s kind=guard addr=%s to=peer=%d %s", MARKER_LEAK_TAG, addr.ToStringAddrPort(), peer.m_id, peer.m_marker_desc);
+        return true;
+    });
+
     // Remove addr records that the peer already knows about, and add new
     // addrs to the m_addr_known filter on the same pass.
     auto addr_already_known = [&peer](const CAddress& addr) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
