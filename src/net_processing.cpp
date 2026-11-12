@@ -2154,6 +2154,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     if (opts.reconcile_txs) {
         m_txreconciliation = std::make_unique<TxReconciliationTracker>(TXRECONCILIATION_VERSION);
     }
+    LogInfo("%s config: marker addresses (240.0.0.0/4) are never sent to any peer or dialled", MARKER_TAG);
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)

@@ -19,6 +19,7 @@
 #include <i2p.h>
 #include <key.h>
 #include <logging.h>
+#include <marker_experiment.h>
 #include <memusage.h>
 #include <net_permissions.h>
 #include <netaddress.h>
@@ -448,6 +449,13 @@ CNode* CConnman::ConnectNode(CAddress addrConnect,
     std::unique_ptr<i2p::sam::Session> i2p_transient_session;
 
     for (auto& target_addr : connect_to) {
+        // Experiment: never dial a marker. Record the attempt in addrman, as a
+        // failed dial to an unreachable address would.
+        if (IsMarkerAddr(target_addr)) {
+            LogInfo("%s kind=dial addr=%s conn=%s", MARKER_LEAK_TAG, target_addr.ToStringAddrPort(), ConnectionTypeAsString(conn_type));
+            addrman.get().Attempt(target_addr, fCountFailure);
+            continue;
+        }
         if (target_addr.IsValid()) {
             const std::optional<Proxy> use_proxy{
                 proxy_override.has_value() ? proxy_override : GetProxy(target_addr.GetNetwork()),
