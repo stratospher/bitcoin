@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <hash.h>
 #include <logging/timer.h>
+#include <marker_experiment.h>
 #include <netbase.h>
 #include <netgroup.h>
 #include <random.h>
@@ -184,7 +185,7 @@ bool CBanDB::Read(banmap_t& banSet)
 
 bool DumpPeerAddresses(const ArgsManager& args, const AddrMan& addr)
 {
-    const auto pathAddr = args.GetDataDirNet() / "peers.dat";
+    const auto pathAddr = args.GetDataDirNet() / MARKER_ADDRMAN_FILE;
     return SerializeFileDB("peers", pathAddr, addr);
 }
 
@@ -201,7 +202,11 @@ util::Result<std::unique_ptr<AddrMan>> LoadAddrman(const NetGroupManager& netgro
     auto addrman{std::make_unique<AddrMan>(netgroupman, deterministic, /*consistency_check_ratio=*/check_addrman)};
 
     const auto start{SteadyClock::now()};
-    const auto path_addr{args.GetDataDirNet() / "peers.dat"};
+    const auto path_addr{args.GetDataDirNet() / MARKER_ADDRMAN_FILE};
+    // Experiment: on mainnet, never start from an empty addrman by mistake.
+    if (args.GetChainType() == ChainType::MAIN && !fs::exists(path_addr)) {
+        return util::Error{Untranslated(strprintf("EXPERIMENT: %s not found. Stop, then run contrib/marker-experiment/peersdat.sh prepare <datadir> to copy peers.dat into it.", fs::PathToString(path_addr)))};
+    }
     try {
         DeserializeFileDB(path_addr, *addrman);
         LogInfo("Loaded %i addresses from peers.dat %dms", addrman->Size(), Ticks<std::chrono::milliseconds>(SteadyClock::now() - start));

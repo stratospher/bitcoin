@@ -16,6 +16,8 @@
  */
 inline constexpr const char* MARKER_TAG{"MARKER_T"};
 inline constexpr const char* MARKER_LEAK_TAG{"!!MARKER_T_LEAK_BLOCKED"};
+/** Addrman file used instead of peers.dat, so a stock binary never loads markers. */
+inline constexpr const char* MARKER_ADDRMAN_FILE{"peers-marker.dat"};
 
 inline bool IsMarkerAddr(const CNetAddr& addr)
 {
