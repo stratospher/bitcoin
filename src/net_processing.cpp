@@ -1178,7 +1178,7 @@ private:
      */
     bool SetupAddressRelay(const CNode& node, Peer& peer) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
-    void ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer& peer, std::vector<CAddress>&& vAddr, const std::atomic<bool>& interruptMsgProc)
+    void ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer& peer, std::vector<CAddress>&& vAddr, NodeClock::time_point time_received, const std::atomic<bool>& interruptMsgProc)
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex);
 
     void AddAddressKnown(Peer& peer, const CAddress& addr) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
@@ -4363,7 +4363,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
 
         std::vector<CAddress> vAddr;
         vRecv >> ser_params(vAddr);
-        ProcessAddrs(msg_type, pfrom, peer, std::move(vAddr), interruptMsgProc);
+        ProcessAddrs(msg_type, pfrom, peer, std::move(vAddr), time_received, interruptMsgProc);
         return;
     }
 
@@ -6007,7 +6007,7 @@ bool PeerManagerImpl::SetupAddressRelay(const CNode& node, Peer& peer)
     return true;
 }
 
-void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer& peer, std::vector<CAddress>&& vAddr, const std::atomic<bool>& interruptMsgProc)
+void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer& peer, std::vector<CAddress>&& vAddr, NodeClock::time_point time_received, const std::atomic<bool>& interruptMsgProc)
 {
     AssertLockNotHeld(m_peer_mutex);
     AssertLockHeld(g_msgproc_mutex);
@@ -6049,6 +6049,10 @@ void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer
         if (peer.m_addr_token_bucket < 1.0) {
             if (rate_limited) {
                 ++num_rate_limit;
+                if (IsMarkerAddr(addr)) {
+                    LogInfo("%s recv addr=%s ntime=%d msg_addrs=%u result=rate-limited tokens=%.3f from=peer=%d %s",
+                            MARKER_TAG, addr.ToStringAddrPort(), TicksSinceEpoch<std::chrono::seconds>(addr.nTime), vAddr.size(), peer.m_addr_token_bucket, pfrom.GetId(), peer.m_marker_desc);
+                }
                 continue;
             }
         } else {
@@ -6057,8 +6061,13 @@ void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer
         // We only bother storing full nodes, though this may include
         // things which we would not make an outbound connection to, in
         // part because we may make feeler connections to them.
-        if (!MayHaveUsefulAddressDB(addr.nServices) && !HasAllDesirableServiceFlags(addr.nServices))
+        if (!MayHaveUsefulAddressDB(addr.nServices) && !HasAllDesirableServiceFlags(addr.nServices)) {
+            if (IsMarkerAddr(addr)) {
+                LogInfo("%s recv addr=%s services=0x%x result=bad-services from=peer=%d %s",
+                        MARKER_TAG, addr.ToStringAddrPort(), uint64_t{addr.nServices}, pfrom.GetId(), peer.m_marker_desc);
+            }
             continue;
+        }
 
         if (addr.nTime <= NodeSeconds{100000000s} || addr.nTime > current_time + 10min) {
             addr.nTime = std::chrono::time_point_cast<std::chrono::seconds>(current_time - 5 * 24h);
@@ -6070,7 +6079,16 @@ void PeerManagerImpl::ProcessAddrs(std::string_view msg_type, CNode& pfrom, Peer
         }
         ++num_proc;
         const bool reachable{g_reachable_nets.Contains(addr)};
-        if (addr.nTime > current_time - 10min && vAddr.size() <= 10 && addr.IsRoutable()) {
+        const bool relay_eligible{addr.nTime > current_time - 10min && vAddr.size() <= 10 && addr.IsRoutable()};
+        if (IsMarkerAddr(addr)) {
+            // age_ms is measured against the same clock value as the relay check above.
+            // queue_ms is the time between the socket read and this processing.
+            LogInfo("%s recv addr=%s ntime=%d t_us=%d age_ms=%d queue_ms=%d msg_addrs=%u result=processed relay_eligible=%d reachable=%d tokens=%.3f from=peer=%d %s",
+                    MARKER_TAG, addr.ToStringAddrPort(), TicksSinceEpoch<std::chrono::seconds>(addr.nTime), TicksSinceEpoch<std::chrono::microseconds>(current_time),
+                    Ticks<std::chrono::milliseconds>(current_time - addr.nTime), Ticks<std::chrono::milliseconds>(current_time - time_received),
+                    vAddr.size(), relay_eligible, reachable, peer.m_addr_token_bucket, pfrom.GetId(), peer.m_marker_desc);
+        }
+        if (relay_eligible) {
             // Relay to a limited number of other nodes
             RelayAddress(pfrom.GetId(), addr, reachable);
         }
