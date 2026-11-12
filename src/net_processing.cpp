@@ -24,6 +24,7 @@
 #include <index/blockfilterindex.h>
 #include <kernel/types.h>
 #include <logging.h>
+#include <marker_experiment.h>
 #include <merkleblock.h>
 #include <net.h>
 #include <net_permissions.h>
@@ -367,6 +368,10 @@ struct Peer {
      *  This field must correlate with whether m_addr_known has been
      *  initialized.*/
     std::atomic_bool m_addr_relay_enabled{false};
+    /** Experiment: whether marker addresses may be sent to this peer. Set once in InitializeNode. */
+    bool m_marker_allowed{false};
+    /** Experiment: connection type and address, for marker logs. Set once in InitializeNode. */
+    std::string m_marker_desc;
     /** Guards address sending timers. */
     mutable Mutex m_addr_send_times_mutex;
     /** Time point to send the next ADDR message to this peer. */
@@ -1713,6 +1718,7 @@ void PeerManagerImpl::InitializeNode(const CNode& node, ServiceFlags our_service
     }
 
     PeerRef peer = std::make_shared<Peer>(nodeid, our_services, node.IsInboundConn());
+    peer->m_marker_desc = strprintf("conn=%s ip=%s", node.ConnectionTypeAsString(), node.addr.ToStringAddrPort());
     {
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
@@ -2537,10 +2543,14 @@ void PeerManagerImpl::RelayAddress(NodeId originator,
     std::array<std::pair<uint64_t, Peer*>, 2> best{{{0, nullptr}, {0, nullptr}}};
     assert(nRelayNodes <= best.size());
 
+    const bool marker{IsMarkerAddr(addr)};
+    size_t num_candidates{0};
+
     LOCK(m_peer_mutex);
 
     for (auto& [id, peer] : m_peer_map) {
         if (peer->m_addr_relay_enabled && id != originator && IsAddrCompatible(*peer, addr)) {
+            ++num_candidates;
             uint64_t hashKey = CSipHasher(hasher).Write(id).Finalize();
             for (unsigned int i = 0; i < nRelayNodes; i++) {
                  if (hashKey > best[i].first) {
@@ -2552,7 +2562,21 @@ void PeerManagerImpl::RelayAddress(NodeId originator,
         }
     };
 
+    if (marker) {
+        std::string picks;
+        for (unsigned int i = 0; i < nRelayNodes && best[i].first != 0; i++) {
+            picks += strprintf(" pick%u=[peer=%d %s allowed=%d]", i, best[i].second->m_id, best[i].second->m_marker_desc, best[i].second->m_marker_allowed);
+        }
+        LogInfo("%s relay addr=%s candidates=%u peers=%u nrelay=%u%s",
+                MARKER_TAG, addr.ToStringAddrPort(), num_candidates, m_peer_map.size(), nRelayNodes, picks);
+    }
+
     for (unsigned int i = 0; i < nRelayNodes && best[i].first != 0; i++) {
+        if (marker && !best[i].second->m_marker_allowed) {
+            LogInfo("%s kind=gossip addr=%s to=peer=%d %s",
+                    MARKER_LEAK_TAG, addr.ToStringAddrPort(), best[i].second->m_id, best[i].second->m_marker_desc);
+            continue;
+        }
         PushAddress(*best[i].second, addr);
     }
 }
