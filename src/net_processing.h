@@ -110,6 +110,8 @@ public:
         bool private_broadcast{DEFAULT_PRIVATE_BROADCAST};
         //! Maximum per-second rate for sending transaction inventory to peers.
         unsigned int tx_send_rate{DEFAULT_TX_SEND_RATE};
+        //! Experiment: the only peer marker addresses may be relayed to, over a manual outbound connection.
+        std::optional<CService> marker_peer;
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,

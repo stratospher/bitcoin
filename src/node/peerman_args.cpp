@@ -4,8 +4,11 @@
 
 #include <node/peerman_args.h>
 
+#include <chainparams.h>
 #include <common/args.h>
+#include <marker_experiment.h>
 #include <net_processing.h>
+#include <netbase.h>
 
 #include <algorithm>
 #include <limits>
@@ -29,6 +32,10 @@ void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& optio
     }
 
     if (auto value{argsman.GetBoolArg("-privatebroadcast")}) options.private_broadcast = *value;
+
+    // Experiment: an invalid -markerpeer leaves no allowed peer, so markers go nowhere.
+    const CService marker_peer{LookupNumeric(argsman.GetArg("-markerpeer", DEFAULT_MARKER_PEER), Params().GetDefaultPort())};
+    if (marker_peer.IsValid()) options.marker_peer = marker_peer;
 }
 
 } // namespace node

@@ -1719,6 +1719,8 @@ void PeerManagerImpl::InitializeNode(const CNode& node, ServiceFlags our_service
 
     PeerRef peer = std::make_shared<Peer>(nodeid, our_services, node.IsInboundConn());
     peer->m_marker_desc = strprintf("conn=%s ip=%s", node.ConnectionTypeAsString(), node.addr.ToStringAddrPort());
+    peer->m_marker_allowed = m_opts.marker_peer && node.IsManualConn() && static_cast<const CService&>(node.addr) == *m_opts.marker_peer;
+    if (peer->m_marker_allowed) LogInfo("%s allowed peer connected peer=%d %s", MARKER_TAG, nodeid, peer->m_marker_desc);
     {
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
@@ -1791,6 +1793,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         // destructed.
         PeerRef peer = RemovePeer(nodeid);
         assert(peer != nullptr);
+        if (peer->m_marker_allowed) LogInfo("%s allowed peer disconnected peer=%d %s", MARKER_TAG, nodeid, peer->m_marker_desc);
     }
     CNodeState *state = State(nodeid);
     assert(state != nullptr);
@@ -2154,7 +2157,8 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     if (opts.reconcile_txs) {
         m_txreconciliation = std::make_unique<TxReconciliationTracker>(TXRECONCILIATION_VERSION);
     }
-    LogInfo("%s config: marker addresses (240.0.0.0/4) are never sent to any peer or dialled", MARKER_TAG);
+    LogInfo("%s config: marker addresses (240.0.0.0/4) are only relayed to the manual connection to %s, never sent to any other peer or dialled",
+            MARKER_TAG, m_opts.marker_peer ? m_opts.marker_peer->ToStringAddrPort() : "none");
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)

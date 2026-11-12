@@ -11,11 +11,13 @@
  * EXPERIMENT ONLY, never merge.
  *
  * Class E IPv4 addresses (240.0.0.0/4) are treated as "markers", injected to
- * trace addr relay. They must never be sent to any peer or dialled. Every
- * blocked attempt is logged with MARKER_LEAK_TAG.
+ * trace addr relay. They must never be sent to any peer or dialled, except
+ * relayed to the manual outbound connection to -markerpeer. Every blocked
+ * attempt is logged with MARKER_LEAK_TAG.
  */
-inline constexpr const char* MARKER_TAG{"MARKER_T"};
-inline constexpr const char* MARKER_LEAK_TAG{"!!MARKER_T_LEAK_BLOCKED"};
+inline constexpr const char* MARKER_TAG{"MARKER_N1"};
+inline constexpr const char* MARKER_LEAK_TAG{"MARKER_N1_LEAK_BLOCKED"};
+inline constexpr const char* DEFAULT_MARKER_PEER{"137.184.134.174:8333"};
 /** Addrman file used instead of peers.dat, so a stock binary never loads markers. */
 inline constexpr const char* MARKER_ADDRMAN_FILE{"peers-marker.dat"};
 
