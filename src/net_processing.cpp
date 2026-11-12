@@ -5201,8 +5201,17 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         } else {
             vAddr = m_connman.GetAddresses(pfrom, MAX_ADDR_TO_SEND, MAX_PCT_ADDR_TO_SEND);
         }
+        std::vector<std::string> markers_blocked;
         for (const CAddress &addr : vAddr) {
+            if (IsMarkerAddr(addr) && !peer.m_marker_allowed) {
+                markers_blocked.push_back(addr.ToStringAddrPort());
+                continue;
+            }
             PushAddress(peer, addr);
+        }
+        if (!markers_blocked.empty()) {
+            LogInfo("%s kind=getaddr count=%u response_size=%u to=peer=%d %s addrs=%s",
+                    MARKER_LEAK_TAG, markers_blocked.size(), vAddr.size(), pfrom.GetId(), peer.m_marker_desc, util::Join(markers_blocked, ","));
         }
         return;
     }
