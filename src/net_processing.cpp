@@ -5836,12 +5836,26 @@ void PeerManagerImpl::MaybeSendAddr(CNode& node, Peer& peer, std::chrono::micros
     auto addr_already_known = [&peer](const CAddress& addr) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
         bool ret = peer.m_addr_known->contains(addr.GetKey());
         if (!ret) peer.m_addr_known->insert(addr.GetKey());
+        if (ret && IsMarkerAddr(addr)) {
+            LogInfo("%s send-skipped addr=%s reason=already-known to=peer=%d %s", MARKER_TAG, addr.ToStringAddrPort(), peer.m_id, peer.m_marker_desc);
+        }
         return ret;
     };
     std::erase_if(peer.m_addrs_to_send, addr_already_known);
 
     // No addr messages to send
     if (peer.m_addrs_to_send.empty()) return;
+
+    if (peer.m_marker_allowed) {
+        const auto now{NodeClock::now()};
+        for (const CAddress& addr : peer.m_addrs_to_send) {
+            if (!IsMarkerAddr(addr)) continue;
+            LogInfo("%s send addr=%s ntime=%d t_us=%d age_ms=%d msg_addrs=%u to=peer=%d %s min_ping_us=%d",
+                    MARKER_TAG, addr.ToStringAddrPort(), TicksSinceEpoch<std::chrono::seconds>(addr.nTime), TicksSinceEpoch<std::chrono::microseconds>(now),
+                    Ticks<std::chrono::milliseconds>(now - addr.nTime), peer.m_addrs_to_send.size(), peer.m_id, peer.m_marker_desc,
+                    Ticks<std::chrono::microseconds>(node.m_min_ping_time.load()));
+        }
+    }
 
     if (peer.m_wants_addrv2) {
         MakeAndPushMessage(node, NetMsgType::ADDRV2, CAddress::V2_NETWORK(peer.m_addrs_to_send));
