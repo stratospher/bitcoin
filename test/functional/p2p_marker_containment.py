@@ -2,11 +2,13 @@
 # Copyright (c) 2026-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""EXPERIMENT ONLY. Marker addresses (240.0.0.0/4) must never leave node T.
+"""EXPERIMENT ONLY. Marker addresses (240.0.0.0/4) only leave node 1 towards T.
 
 Stand-in "mainnet" peers (inbound and outbound) must never receive a marker,
 through gossip or a GETADDR response, and the node must never dial one. Plain
-addresses injected the same way must still relay (positive control).
+addresses injected the same way must still relay (positive control). Markers
+do reach T over node 1's manual connection to -markerpeer, and T passes them
+on to no one (T here runs this binary without a matching manual connection).
 """
 
 import time
@@ -24,16 +26,26 @@ from test_framework.p2p import (
     p2p_lock,
 )
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal
+from test_framework.util import (
+    assert_equal,
+    assert_greater_than,
+    p2p_port,
+)
 
-TAG = "MARKER_T"
-LEAK_TAG = "!!MARKER_T_LEAK_BLOCKED"
+TAG = "MARKER_N1"
+LEAK_TAG = "MARKER_N1_LEAK_BLOCKED"
 NUM_MARKERS = 40
 NUM_CONTROLS = 20
+NUM_CHAIN_MARKERS = 20
 
 
 def is_marker(ip):
     return int(ip.split('.')[0]) >= 240
+
+
+def log_count(node, needle):
+    with open(node.debug_log_path, encoding="utf-8") as f:
+        return sum(needle in line for line in f)
 
 
 def addr_msg(addrs):
@@ -70,11 +82,26 @@ class AddrObserver(P2PInterface):
 
 class MarkerContainmentTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.num_nodes = 1
+        self.num_nodes = 2
+
+    def setup_network(self):
+        # Node 0 is node 1 of the experiment, node 1 stands in for T. They are
+        # connected only in the chain test.
+        self.marker_peer_args = [f"-markerpeer=127.0.0.1:{p2p_port(1)}"]
+        self.extra_args = [self.marker_peer_args, []]
+        self.setup_nodes()
 
     def bump(self, seconds):
         self.mocktime += seconds
-        self.nodes[0].setmocktime(self.mocktime)
+        for n in self.nodes:
+            n.setmocktime(self.mocktime)
+
+    def inbound_observer(self, node):
+        obs = node.add_p2p_connection(AddrObserver())
+        # An empty addr message enables addr relay to this inbound peer
+        # without using up its one GETADDR response.
+        obs.send_and_ping(msg_addr())
+        return obs
 
     def make_addr(self, ip, age):
         addr = CAddress()
@@ -94,16 +121,10 @@ class MarkerContainmentTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0]
         self.mocktime = int(time.time())
-        node.setmocktime(self.mocktime)
+        self.bump(0)
 
         self.log.info("Connect stand-in mainnet peers: 3 inbound, 2 outbound")
-        observers = []
-        for _ in range(3):
-            obs = node.add_p2p_connection(AddrObserver())
-            # An empty addr message enables addr relay to this inbound peer
-            # without using up its one GETADDR response.
-            obs.send_and_ping(msg_addr())
-            observers.append(obs)
+        observers = [self.inbound_observer(node) for _ in range(3)]
         # Outbound peers announce our tip so they aren't evicted for an old chain.
         tip_header = from_hex(CBlockHeader(), node.getblockheader(node.getbestblockhash(), False))
         for i in range(2):
@@ -144,7 +165,7 @@ class MarkerContainmentTest(BitcoinTestFramework):
         self.log.info("GETADDR responses never carry markers")
         # Every P2PInterface sends getaddr on connect, so the response cache was
         # built while addrman was empty. Restart to rebuild it (addrman persists).
-        self.restart_node(0, extra_args=[f"-mocktime={self.mocktime}"])
+        self.restart_node(0, extra_args=self.marker_peer_args + [f"-mocktime={self.mocktime}"])
         with node.assert_debug_log([f"{LEAK_TAG} kind=getaddr"]):
             getaddr_peer = node.add_p2p_connection(AddrObserver())
             getaddr_peer.sync_with_ping()
@@ -154,6 +175,32 @@ class MarkerContainmentTest(BitcoinTestFramework):
         self.log.info("Markers are never dialled")
         with node.assert_debug_log([f"{LEAK_TAG} kind=dial addr=241.1.2.3:8333 conn=manual"]):
             node.addnode("241.1.2.3:8333", "onetry")
+
+        self.log.info("Chain: markers reach T only over node 1's manual connection, and stop there")
+        node_t = self.nodes[1]
+        with node.assert_debug_log([f"{TAG} allowed peer connected"]):
+            self.connect_nodes(0, 1)
+        n1_observers = [self.inbound_observer(node) for _ in range(2)]
+        t_observers = [self.inbound_observer(node_t) for _ in range(2)]
+        injector = node.add_p2p_connection(P2PInterface())
+        for i in range(NUM_CHAIN_MARKERS):
+            self.bump(11)
+            injector.send_and_ping(addr_msg([self.make_addr(marker_ip(100 + i), 30)]))
+        # Small steps, so markers reach T while still relay eligible there.
+        for _ in range(20):
+            self.bump(30)
+            for p in n1_observers + t_observers + [getaddr_peer]:
+                p.sync_with_ping()
+        sent_to_t = log_count(node, f"{TAG} send addr=")
+        assert_greater_than(sent_to_t, 0)
+        self.wait_until(lambda: log_count(node_t, f"{TAG} recv addr=") == sent_to_t)
+        assert_greater_than(log_count(node_t, "result=processed relay_eligible=1"), 0)
+        assert_greater_than(log_count(node_t, f"{LEAK_TAG} kind=gossip"), 0)
+        assert_greater_than(log_count(node_t, f"{TAG} addrman addr="), 0)
+        assert_equal(log_count(node, f"{LEAK_TAG} kind=guard"), 0)
+        assert_equal(log_count(node_t, f"{LEAK_TAG} kind=guard"), 0)
+        for obs in n1_observers + t_observers + [getaddr_peer]:
+            assert_equal(obs.markers(), [])
 
 
 if __name__ == '__main__':
